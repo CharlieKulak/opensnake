@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
 import random
+import sys
 from pathlib import Path
 
 import pygame
@@ -32,9 +34,42 @@ RESOLUTIONS = [(800, 600), (1024, 768), (1280, 720), (1280, 800), (1366, 768), (
 DISPLAY_VALUES = ["window"] + [f"{w}x{h}" for w, h in RESOLUTIONS] + ["fullscreen"]
 DEFAULT_WINDOW = (1000, 840)
 
+# Running in a web browser (pygbag / WebAssembly). The page scales the game's
+# canvas to fit, so the Display option picks the canvas resolution (16:9 sizes)
+# or fullscreen, and there is no Quit.
+WEB = sys.platform == "emscripten"
+WEB_RESOLUTIONS = [(1024, 576), (1280, 720), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160)]
+WEB_DEFAULT_DISPLAY = "1280x720"
+
+
+def browser_window():
+    """The page's JavaScript ``window`` object in the browser build, else None."""
+    if not WEB:
+        return None
+    try:
+        import platform as pygbag_platform  # pygbag's module of this name exposes the page
+        return getattr(pygbag_platform, "window", None)
+    except Exception:
+        return None
+
+
+ASPECTS = [(16, 9), (16, 10), (4, 3), (5, 4), (21, 9)]
+
+
+def aspect_label(w: int, h: int) -> str:
+    """Nearest common aspect ratio, e.g. "16:9" (1366x768 counts as 16:9)."""
+    ratio = w / h
+    a, b = min(ASPECTS, key=lambda ab: abs(ab[0] / ab[1] - ratio))
+    if (a, b) == (21, 9):
+        return "21:9" if abs(ratio - 21 / 9) < 0.08 else f"{w}:{h}"
+    return f"{a}:{b}" if abs(ratio - a / b) < 0.02 else f"{w}:{h}"
+
 
 def display_label(value: str) -> str:
-    return {"window": "Window", "fullscreen": "Fullscreen"}.get(value, value.replace("x", " x "))
+    if value in ("window", "fullscreen"):
+        return {"window": "Window", "fullscreen": "Fullscreen"}[value]
+    w, h = map(int, value.split("x"))
+    return f"{w} x {h} ({aspect_label(w, h)})"
 
 
 DEFAULTS = {
@@ -144,15 +179,21 @@ class App:
             pygame.display.set_icon(pygame.image.load_sized_svg(str(logo), (64, 64)))
         except (pygame.error, FileNotFoundError):
             pass  # no icon is fine
-        self.desktop = self._desktop_size()
-        # Only offer fixed window sizes that fit on this monitor.
-        DISPLAY_VALUES[:] = [v for v in DISPLAY_VALUES if v in ("window", "fullscreen")
-                             or all(a <= b for a, b in zip(map(int, v.split("x")), self.desktop))]
-        dw, dh = self.desktop
-        self.window_size = (min(DEFAULT_WINDOW[0], dw - 80), min(DEFAULT_WINDOW[1], dh - 100))
+        if WEB:
+            DISPLAY_VALUES[:] = [f"{w}x{h}" for w, h in WEB_RESOLUTIONS] + ["fullscreen"]
+            DEFAULTS["display"] = WEB_DEFAULT_DISPLAY
+            self.desktop = self.window_size = DEFAULT_WINDOW
+        else:
+            self.desktop = self._desktop_size()
+            # Only offer fixed window sizes that fit on this monitor.
+            DISPLAY_VALUES[:] = [v for v in DISPLAY_VALUES if v in ("window", "fullscreen")
+                                 or all(a <= b for a, b in zip(map(int, v.split("x")), self.desktop))]
+            dw, dh = self.desktop
+            self.window_size = (min(DEFAULT_WINDOW[0], dw - 80), min(DEFAULT_WINDOW[1], dh - 100))
         self.clock = pygame.time.Clock()
         self.store = Store(config_path())
-        self.windowed_display = "window" if self.store.settings["display"] == "fullscreen" \
+        windowed = WEB_DEFAULT_DISPLAY if WEB else "window"
+        self.windowed_display = windowed if self.store.settings["display"] == "fullscreen" \
             else self.store.settings["display"]
         self.icon_cache: dict = {}
         self.apply_display()
@@ -189,6 +230,9 @@ class App:
 
     def apply_display(self):
         value = self.store.settings["display"]
+        if WEB:
+            self.apply_web_display(value)
+            return
         if value == "fullscreen":
             self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         elif value == "window":
@@ -198,6 +242,33 @@ class App:
             self.screen = pygame.display.set_mode((w, h))
         if value != "fullscreen":
             self.windowed_display = value
+        self.icon_cache.clear()
+
+    def apply_web_display(self, value):
+        """Browser: set the canvas resolution; the page scales it to fit.
+
+        Fullscreen uses the monitor's own resolution so it fills the screen
+        with no bars. Browsers only allow entering fullscreen right after a
+        key press or click, which is when this runs.
+        """
+        win = browser_window()
+        doc = getattr(win, "document", None) if win else None
+        if value == "fullscreen":
+            size = WEB_RESOLUTIONS[3]
+            try:
+                size = (int(win.screen.width), int(win.screen.height))
+                doc.documentElement.requestFullscreen()
+            except Exception:
+                pass  # no JS access or fullscreen refused: just use a big 16:9 canvas
+        else:
+            size = tuple(map(int, value.split("x")))
+            self.windowed_display = value
+            try:
+                if doc.fullscreenElement:
+                    doc.exitFullscreen()
+            except Exception:
+                pass
+        self.screen = pygame.display.set_mode(size)
         self.icon_cache.clear()
 
     def toggle_fullscreen(self):
@@ -545,8 +616,9 @@ class App:
         hint_h = int(ph * 0.024) + 16  # shortcut hint along the panel's bottom edge
         by = min(y + slider_h + 10, panel.bottom - hint_h - bh)
         bw = min(round(200 * grow), pw // 3 - 20)
-        for i, (bid, _label) in enumerate((("blender", "Blender"), ("play", "Play"), ("quit", "Quit"))):
-            x = panel.centerx + (i - 1) * (bw + 16) - bw // 2
+        buttons = [("blender", "Blender"), ("play", "Play")] + ([] if WEB else [("quit", "Quit")])
+        for i, (bid, _label) in enumerate(buttons):
+            x = panel.centerx + (i - (len(buttons) - 1) / 2) * (bw + 16) - bw // 2
             widgets.append({"kind": "btn", "id": bid, "rect": pygame.Rect(x, by, bw, bh)})
         self.widgets = widgets
         self.focus = min(self.focus, len(widgets) - 1)
@@ -840,15 +912,24 @@ class App:
         if self.state == "menu":
             self.draw_menu()
 
+    def frame(self):
+        dt = self.clock.tick(60 if WEB else 120)
+        for ev in pygame.event.get():
+            self.handle(ev)
+        self.update(dt)
+        self.draw()
+        pygame.display.flip()
+
     def run(self):
         while self.running:
-            dt = self.clock.tick(120)
-            for ev in pygame.event.get():
-                self.handle(ev)
-            self.update(dt)
-            self.draw()
-            pygame.display.flip()
+            self.frame()
         pygame.quit()
+
+    async def run_async(self):
+        """Main loop for the browser: hand control back to the page every frame."""
+        while self.running:
+            self.frame()
+            await asyncio.sleep(0)
 
 
 def main(argv=None):

@@ -424,6 +424,7 @@ the view:
 | `examples/mods/` | Example mod. |
 | `packaging/launcher.py` | Entry point for the standalone builds. |
 | `packaging/linux/` | Desktop file, icons and install script for Linux. |
+| `web-support/` | Browser version: build and local server scripts. See [web-support/README.md](web-support/README.md). |
 
 ### Building releases
 

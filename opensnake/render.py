@@ -11,9 +11,8 @@ import random
 from pathlib import Path
 
 import pygame
-import pygame.gfxdraw
 
-from . import modes
+from . import gfx, modes
 from .assets import load_image
 from .game import DIRS
 from .registry import MODE_HOOKS
@@ -445,8 +444,8 @@ class Sprites:
 
 def aa_disc(surf, color, x, y, r):
     xi, yi, ri = round(x), round(y), max(1, round(r))
-    pygame.gfxdraw.aacircle(surf, xi, yi, ri, color)
-    pygame.gfxdraw.filled_circle(surf, xi, yi, ri, color)
+    gfx.aacircle(surf, xi, yi, ri, color)
+    gfx.filled_circle(surf, xi, yi, ri, color)
 
 
 def band(surf, color, a, b, w):
@@ -570,8 +569,8 @@ def draw_snake(surf, s, path, s_head, s_tail, c, head_col, tail_col, cheese=Fals
             left.append(((x - ty * half) * c + ox, (y + tx * half) * c + oy))
             right.append(((x + ty * half) * c + ox, (y - tx * half) * c + oy))
         poly = left + right[::-1]
-        pygame.gfxdraw.filled_polygon(surf, poly, col)
-        pygame.gfxdraw.aapolygon(surf, poly, col)
+        gfx.filled_polygon(surf, poly, col)
+        gfx.aapolygon(surf, poly, col)
 
     def cap(sv, half, col):
         x, y, _, _ = path.point(sv)
@@ -793,7 +792,7 @@ class Renderer:
                 draw_snake(surf, s, path, s_head, s_tail, c, palette[0], palette[1], game.has("cheese"),
                            offset=(v.ox, v.oy))
             if s.shield > 0:
-                pygame.gfxdraw.filled_circle(surf, round(h[0]), round(h[1]), round(c * 0.62), (120, 190, 255, 70))
+                gfx.filled_circle(surf, round(h[0]), round(h[1]), round(c * 0.62), (120, 190, 255, 70))
                 pygame.draw.circle(surf, (80, 160, 255), h, c * 0.62, max(2, int(c * 0.07)))
             head_img = sp.snake_head(c, s.dead)
             if head_img:
@@ -814,7 +813,7 @@ class Renderer:
             p[4] -= 0.03
             if p[4] > 0:
                 col = (*p[5], int(255 * p[4]))
-                pygame.gfxdraw.filled_circle(surf, round(p[0] + v.ox), round(p[1] + v.oy),
+                gfx.filled_circle(surf, round(p[0] + v.ox), round(p[1] + v.oy),
                                              max(1, round(p[6])), col)
                 alive.append(p)
         self.particles = alive
