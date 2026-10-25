@@ -50,6 +50,10 @@ If you installed OpenSnake another way and only want the menu entry, copy
 `~/.local/share/icons/hicolor/scalable/apps/`. The entry runs
 `/usr/bin/opensnake`; edit its `Exec=` line if yours is elsewhere.
 
+To play in a web browser, download `OpenSnake-<version>-web.zip`, unzip it,
+and run `python3 serve.py` inside the folder; see
+[web-support/README.md](web-support/README.md).
+
 The releases also include `opensnake-<version>-py3-none-any.whl` for people
 who already have Python: `pip install` it, then run `opensnake`.
 

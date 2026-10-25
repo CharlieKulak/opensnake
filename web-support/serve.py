@@ -12,7 +12,9 @@ import http.server
 import socket
 from pathlib import Path
 
-DEFAULT_DIR = Path(__file__).resolve().parent / "build" / "opensnake" / "build" / "web"
+HERE = Path(__file__).resolve().parent
+# Next to a built game (the release zip) serve this folder; in the repo, the build output.
+DEFAULT_DIR = HERE if (HERE / "index.html").is_file() else HERE / "build" / "opensnake" / "build" / "web"
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):

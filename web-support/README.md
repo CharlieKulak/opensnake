@@ -13,6 +13,22 @@ same as the desktop version (`../opensnake/`).
 | `main.py` | The browser entry point that starts the game |
 | `build/` | Build output. Created by `build.sh`, ignored by git, safe to delete |
 
+## Using the release download
+
+Each release includes `OpenSnake-<version>-web.zip`, the browser version
+already built. Unzip it and start the server from inside the folder (needs
+Python 3, nothing else):
+
+```sh
+cd OpenSnake-<version>-web
+python3 serve.py
+```
+
+Then open the address it prints. You can also upload the folder's contents
+(everything except `serve.py`) to any static web host.
+
+The rest of this guide is for building it yourself from the source code.
+
 ## First-time setup
 
 Run these from the project folder (the one containing `web-support/`). You only

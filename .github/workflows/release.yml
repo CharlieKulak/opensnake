@@ -97,10 +97,35 @@ jobs:
           name: python-packages
           path: dist/*
 
+  web:
+    name: Browser version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "pygbag==0.9.3"
+      - name: Build
+        run: PYTHON=python web-support/build.sh
+      - name: Package
+        run: |
+          name="OpenSnake-${GITHUB_REF_NAME#v}-web"
+          [ "$GITHUB_REF_TYPE" = "tag" ] || name="OpenSnake-dev-web"
+          mkdir -p "out/$name"
+          cp -R web-support/build/opensnake/build/web/. "out/$name/"
+          cp web-support/serve.py web-support/README.md LICENSE CREDITS.md "out/$name/"
+          (cd out && zip -qr "../$name.zip" "$name")
+          ls -la "$name.zip"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: web
+          path: OpenSnake-*-web.zip
+
   release:
     name: Draft release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [standalone, python-packages]
+    needs: [standalone, python-packages, web]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8.0.2
