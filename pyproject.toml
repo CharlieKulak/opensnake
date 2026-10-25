@@ -19,8 +19,8 @@ classifiers = [
 [project.scripts]
 opensnake = "opensnake.app:main"
 
-[tool.setuptools]
-packages = ["opensnake"]
+[tool.setuptools.packages.find]
+include = ["opensnake*"]
 
 [tool.setuptools.package-data]
 opensnake = ["sounds/*.ogg", "sounds/*.wav", "images/*.svg", "images/*.txt"]

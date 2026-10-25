@@ -14,6 +14,7 @@ The fruit and item artwork is from [Twemoji](https://github.com/jdecked/twemoji)
 (CC-BY 4.0), the eating sounds are CC0 recordings, and everything else is drawn
 or synthesized in code. See [CREDITS.md](CREDITS.md).
 
+- [Download](#download)
 - [Install and play](#install-and-play)
 - [Controls](#controls)
 - [The menu](#the-menu)
@@ -26,9 +27,24 @@ or synthesized in code. See [CREDITS.md](CREDITS.md).
 - [For developers](#for-developers)
 - [License](#license)
 
+## Download
+
+Ready-to-play builds are on the
+[Releases page](https://github.com/CharlieKulak/opensnake/releases). They
+include everything, so you don't need Python.
+
+| System | File | How to run |
+| --- | --- | --- |
+| Windows | `OpenSnake-<version>-windows-x86_64.zip` | Unzip and double-click `OpenSnake.exe`. If Windows SmartScreen warns about an unknown app, click **More info**, then **Run anyway**. |
+| macOS (Apple silicon) | `OpenSnake-<version>-macos-arm64.zip` | Unzip and move `OpenSnake.app` to Applications. The first time, right-click it and choose **Open**, then **Open** again (the app isn't signed with an Apple developer certificate). |
+| Linux (x86-64) | `OpenSnake-<version>-linux-x86_64.tar.gz` | Extract and run `./OpenSnake`. |
+
+The releases also include `opensnake-<version>-py3-none-any.whl` for people
+who already have Python: `pip install` it, then run `opensnake`.
+
 ## Install and play
 
-You need Python 3.10 or newer.
+To run from source you need Python 3.10 or newer.
 
 ```sh
 python -m venv .venv
@@ -395,6 +411,30 @@ the view:
 | `opensnake/registry.py` | Hooks and sounds registered by mods. |
 | `opensnake/app.py` | Window, game loop, menu, HUD, settings. |
 | `examples/mods/` | Example mod. |
+
+### Building releases
+
+Pushing a version tag builds everything on GitHub Actions
+(`.github/workflows/release.yml`) and attaches the files to a **draft**
+release, which you then review and publish:
+
+```sh
+git tag -a v0.2.0 -m "OpenSnake 0.2.0"
+git push origin v0.2.0
+```
+
+Bump `version` in `pyproject.toml` and `__version__` in
+`opensnake/__init__.py` first. To build a standalone game for your own system
+locally:
+
+```sh
+pip install . pyinstaller
+pyinstaller --onefile --windowed --name OpenSnake --paths . \
+  --collect-submodules opensnake --collect-data opensnake packaging/launcher.py
+```
+
+The result is in `dist/`. (On macOS use `--onedir` instead of `--onefile` to
+get an `.app`.) PyInstaller only builds for the system it runs on.
 
 ### Tests
 
