@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- OpenSnake logo. BSD 3-Clause, same as the game's code. -->
+  <defs>
+    <linearGradient id="body" gradientUnits="userSpaceOnUse" x1="44" y1="208" x2="176" y2="104">
+      <stop offset="0" stop-color="#8fb0ff"/>
+      <stop offset="1" stop-color="#3d6fe8"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="40" fill="#aad751"/>
+  <g fill="#a2d149">
+    <rect x="8" y="56" width="48" height="48"/>
+    <rect x="8" y="152" width="48" height="48"/>
+    <rect x="56" y="8" width="48" height="48"/>
+    <rect x="56" y="104" width="48" height="48"/>
+    <rect x="56" y="200" width="48" height="48"/>
+    <rect x="104" y="56" width="48" height="48"/>
+    <rect x="104" y="152" width="48" height="48"/>
+    <rect x="152" y="8" width="48" height="48"/>
+    <rect x="152" y="104" width="48" height="48"/>
+    <rect x="152" y="200" width="48" height="48"/>
+    <rect x="200" y="56" width="48" height="48"/>
+    <rect x="200" y="152" width="48" height="48"/>
+  </g>
+  <rect x="8" y="8" width="240" height="240" rx="40" fill="none" stroke="#578a34" stroke-width="8"/>
+  <path d="M 50 200 H 96 Q 128 200 128 168 V 144 Q 128 112 160 112 H 172" fill="none"
+        stroke="url(#body)" stroke-width="38" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="176" cy="112" r="23" fill="#3d6fe8"/>
+  <circle cx="183" cy="99" r="8.5" fill="#ffffff"/>
+  <circle cx="183" cy="125" r="8.5" fill="#ffffff"/>
+  <circle cx="186.5" cy="99" r="4.6" fill="#1e1e1e"/>
+  <circle cx="186.5" cy="125" r="4.6" fill="#1e1e1e"/>
+  <path d="M 216 98 C 226 90 240 96 239 112 C 238 126 230 136 216 133 C 202 136 194 126 193 112 C 192 96 206 90 216 98 Z"
+        fill="#e7471d"/>
+  <ellipse cx="205" cy="108" rx="4.5" ry="7" fill="#f6a08c" transform="rotate(25 205 108)"/>
+  <path d="M 216 99 Q 216 90 221 84" fill="none" stroke="#6b4423" stroke-width="3.5" stroke-linecap="round"/>
+  <ellipse cx="226" cy="86" rx="8" ry="4" fill="#4caf37" transform="rotate(-25 226 86)"/>
+</svg>

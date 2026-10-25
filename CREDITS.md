@@ -36,7 +36,9 @@ other contributors, licensed under
 | `trophy.svg` | 1f3c6 |
 
 Everything else on screen (board, snake, walls, gates, arrows, targets, mode
-icons) is drawn in code.
+icons) is drawn in code. The OpenSnake logo (`opensnake/images/opensnake.svg`,
+`packaging/linux/opensnake.svg`, `opensnake-256.png`) is original to this
+project and BSD 3-Clause licensed like the code.
 
 ## Sounds
 

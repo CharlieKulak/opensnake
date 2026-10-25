@@ -63,7 +63,8 @@ jobs:
           cp README.md LICENSE CREDITS.md "out/$name/"
           case "$RUNNER_OS" in
             Linux)
-              cp dist/OpenSnake "out/$name/"
+              cp dist/OpenSnake packaging/linux/install.sh packaging/linux/opensnake.desktop \
+                 packaging/linux/opensnake.svg packaging/linux/opensnake-256.png "out/$name/"
               tar -czf "$name.tar.gz" -C out "$name" ;;
             Windows)
               cp dist/OpenSnake.exe "out/$name/"

@@ -37,7 +37,18 @@ include everything, so you don't need Python.
 | --- | --- | --- |
 | Windows | `OpenSnake-<version>-windows-x86_64.zip` | Unzip and double-click `OpenSnake.exe`. If Windows SmartScreen warns about an unknown app, click **More info**, then **Run anyway**. |
 | macOS (Apple silicon) | `OpenSnake-<version>-macos-arm64.zip` | Unzip and move `OpenSnake.app` to Applications. The first time, right-click it and choose **Open**, then **Open** again (the app isn't signed with an Apple developer certificate). |
-| Linux (x86-64) | `OpenSnake-<version>-linux-x86_64.tar.gz` | Extract and run `./OpenSnake`. |
+| Linux (x86-64) | `OpenSnake-<version>-linux-x86_64.tar.gz` | Extract and run `./OpenSnake`, or install it with a menu entry and icon: `sudo ./install.sh` (see below). |
+
+On Linux, `sudo ./install.sh` (from the extracted folder) installs the game as
+`/usr/bin/opensnake` and adds OpenSnake to your applications menu with its
+icon. `sudo ./install.sh --uninstall` removes it again. To install just for
+yourself without `sudo`, run `PREFIX=~/.local ./install.sh`.
+
+If you installed OpenSnake another way and only want the menu entry, copy
+`packaging/linux/opensnake.desktop` to `~/.local/share/applications/` (or
+`/usr/share/applications/`) and `packaging/linux/opensnake.svg` to
+`~/.local/share/icons/hicolor/scalable/apps/`. The entry runs
+`/usr/bin/opensnake`; edit its `Exec=` line if yours is elsewhere.
 
 The releases also include `opensnake-<version>-py3-none-any.whl` for people
 who already have Python: `pip install` it, then run `opensnake`.
@@ -411,6 +422,8 @@ the view:
 | `opensnake/registry.py` | Hooks and sounds registered by mods. |
 | `opensnake/app.py` | Window, game loop, menu, HUD, settings. |
 | `examples/mods/` | Example mod. |
+| `packaging/launcher.py` | Entry point for the standalone builds. |
+| `packaging/linux/` | Desktop file, icons and install script for Linux. |
 
 ### Building releases
 

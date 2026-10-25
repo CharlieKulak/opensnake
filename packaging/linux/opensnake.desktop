@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=OpenSnake
+GenericName=Snake Game
+Comment=Snake game with 19 game modes you can mix together
+Exec=/usr/bin/opensnake
+Icon=opensnake
+Terminal=false
+Categories=Game;ArcadeGame;
+Keywords=snake;arcade;retro;apple;
+StartupWMClass=opensnake

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 from pathlib import Path
 
@@ -129,11 +130,20 @@ def trophy(surf, x, y, size):
 
 class App:
     def __init__(self, assets_dir: str | None = None, mods_dir: str | None = None):
+        # Window class / app id "opensnake" matches StartupWMClass in the
+        # .desktop file, so the taskbar shows the right name and icon.
+        for hint in ("SDL_VIDEO_X11_WMCLASS", "SDL_VIDEO_WAYLAND_WMCLASS", "SDL_APP_ID"):
+            os.environ.setdefault(hint, "opensnake")
         pygame.init()
         # Mods first: they can add modes and fruits the settings refer to.
         self.mod_results = load_mods(mod_dirs(mods_dir))
         OPTIONS[0][2][:] = list(FRUIT_LABELS)
         pygame.display.set_caption("OpenSnake")
+        logo = Path(__file__).parent / "images" / "opensnake.svg"
+        try:
+            pygame.display.set_icon(pygame.image.load_sized_svg(str(logo), (64, 64)))
+        except (pygame.error, FileNotFoundError):
+            pass  # no icon is fine
         self.desktop = self._desktop_size()
         # Only offer fixed window sizes that fit on this monitor.
         DISPLAY_VALUES[:] = [v for v in DISPLAY_VALUES if v in ("window", "fullscreen")
