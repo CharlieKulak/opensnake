@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opensnake"
+version = "0.1.0"
+description = "A free, open-source desktop snake game with 19 combinable game modes"
+readme = "README.md"
+license = "BSD-3-Clause"
+requires-python = ">=3.10"
+dependencies = ["pygame-ce>=2.4"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment :: Arcade",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+opensnake = "opensnake.app:main"
+
+[tool.setuptools]
+packages = ["opensnake"]
+
+[tool.setuptools.package-data]
+opensnake = ["sounds/*.ogg", "sounds/*.wav", "images/*.svg", "images/*.txt"]
