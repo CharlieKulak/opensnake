@@ -18,6 +18,7 @@ or synthesized in code. See [CREDITS.md](CREDITS.md).
 - [Install and play](#install-and-play)
 - [Controls](#controls)
 - [The menu](#the-menu)
+- [Speedrun](#speedrun)
 - [Modes](#modes)
 - [How movement works](#how-movement-works)
 - [Sounds](#sounds)
@@ -92,8 +93,12 @@ Command-line options:
 | Enter / Space | Play again after a game | Select / start typing a number / confirm |
 | Esc | Pause, then back to the menu | Back to a paused game; cancel typing |
 | P | Pause / resume | |
+| R | Restart instantly (great for speedruns) | |
+| Insert | | On the Speedrun screen: add your current settings as a category |
+| Delete | | On the Speedrun screen: remove a custom category (press twice) |
 | B | | Random "Blender" mix of modes |
-| M | Mute / unmute | |
+| T | | Open the Speedrun screen |
+| M | Mute / unmute | Open Packs & Mods |
 | F11 | Fullscreen on/off | Fullscreen on/off |
 
 The mouse works everywhere in the menu: click tiles and buttons, click the
@@ -125,8 +130,8 @@ ones; in Portal mode, this many pairs.
 - **Fullscreen** at your monitor's resolution. F11 switches between fullscreen
   and your last windowed setting.
 
-**Width and Height.** The board size in cells. Any rectangle from 8 x 5 up to
-1000 x 1000 works. Click the box and type a number, then press Enter (numbers
+**Width and Height.** The board size in cells. The default is 10 x 9; any
+rectangle from 8 x 5 up to 1000 x 1000 works. Click the box and type a number, then press Enter (numbers
 outside the range are clamped), or use the `<` `>` arrows / Left and Right
 keys (hold Shift to change by 10).
 
@@ -134,19 +139,116 @@ Boards that fit the window are scaled to fill it. Bigger boards keep the cells
 readable and **scroll**: the camera follows the snake, and markers at the
 screen edge point to the nearest off-screen fruit with its distance in cells.
 
-**Speed.** A slider with three marked stops:
+**Speed.** A slider with five marked stops:
 
 | Stop | Time per cell | Cells per second |
 | --- | --- | --- |
+| Slowest | 260 ms | 3.8 |
 | Slow | 170 ms | 5.9 |
 | Default | 130 ms | 7.7 |
 | Fast | 85 ms | 11.8 |
+| Fastest | 45 ms | 22.2 |
 
 Any position in between works too; the slider snaps to a stop when you get
 close to it. The current speed in cells per second is shown on the right.
 
 A best score is kept separately for every combination of modes, board size,
 speed and fruit count.
+
+## Speedrun
+
+Press **Speedrun** in the menu (or **T**) and pick a category. Each category
+fixes the board, speed, modes and goal, so everyone's times are comparable.
+
+| Category | Goal | Board | Notes |
+| --- | --- | --- | --- |
+| Sprint 10 | Eat 10 | 10 x 9 | |
+| Sprint 25 | Eat 25 | 10 x 9 | |
+| Apple Rush | Eat 30 | 17 x 15 | 5 apples on the board at once |
+| Accelerate | Eat 30 | 10 x 9 | Starts at 170 ms per cell and gets 4 ms faster with every apple |
+| Full Board | Fill every cell | 8 x 5 | 110 ms per cell |
+| Portal Dash | Eat 15 | 12 x 11 | Portal mode |
+| Wall Gauntlet | Eat 20 | 10 x 9 | Wall mode |
+| Key Hunt | Eat 10 | 12 x 11 | Key mode |
+| Twin Turns | Eat 15 | 10 x 9 | Twin mode |
+| Minefield | Eat 15 | 12 x 11 | Minesweeper mode |
+
+Unless noted, categories run at the Default speed (130 ms per cell).
+
+**The timer** starts with your first move and stops the moment you reach the
+goal. It measures *in-game time*: each move adds exactly one move's worth of
+time, so a slow computer or dropped frames never change a result, and pausing
+costs nothing. Press **R** at any time to restart instantly.
+
+**PB (personal best)** is your fastest finish in each category, saved on your
+computer. During a run, the header shows your time, your progress, and after
+each apple a **split** against your PB at the same point: green (`-0.412`)
+means you're ahead, red (`+0.260`) behind.
+
+**WR (world record)** is the fastest verified time anyone has submitted. World
+records are kept in [`opensnake/records.json`](opensnake/records.json) in this
+repository. The game ships with a copy and, when online, downloads the latest
+one from GitHub at start-up, so a new record shows up for everyone without an
+update. (The browser version uses the copy it was built with.) To turn the
+download off, set `"online_records": false` in `settings.json`.
+
+### Custom categories
+
+You can also speedrun **your own settings**. In the main menu, tick
+**Speedrun** and set a **Goal** (fruit to eat; 0 means fill the whole board).
+Pressing Play then times a run of exactly what the menu is set to: modes,
+board size, speed, fruit count and fruit. It works like any other category,
+with a timer, splits, a PB and a run file.
+
+To keep a setup, open the Speedrun screen and press **+ Add my settings** (or
+Insert). It's saved as a named category, listed under the built-in ones with
+its PB and WR. Select a custom category and press Delete twice to remove it;
+its PB is kept in case you add it again. Saved categories are stored in
+`custom-categories.json` next to `settings.json`, which you can copy to share
+your categories with friends.
+
+A custom category's id (like `custom-a1eeb2ba60`) is calculated from its rules,
+so everyone who plays the same settings shares the same PB/WR table, whatever
+they named it. Run files for custom categories include the full rules, and
+`--verify` checks the rules really match the id, so a run can't be passed off
+under easier settings. World records for custom categories go in
+`records.json` under that id, just like built-in ones.
+
+### Submitting a world record
+
+Every finished run is saved as a small replay file: the random seed and your
+key presses, which is enough to replay the run exactly. The files are in a
+`speedruns` folder next to `settings.json`, named like
+`sprint10-20261026-013533-8580ms.json`.
+
+1. Optionally put your name in `settings.json` as `"player_name": "YourName"`
+   before your run, so it's in the file.
+2. Open an issue on the
+   [GitHub repository](https://github.com/CharlieKulak/opensnake/issues) and
+   attach the run file.
+
+Anyone can check a run file, and it can't be faked by editing the time:
+
+```sh
+opensnake --verify sprint10-20261026-013533-8580ms.json
+# VALID   Sprint 10: valid, 0:08.580 (YourName)
+```
+
+The game replays the run and confirms it really finishes in the claimed time.
+Maintainers then add it to `opensnake/records.json`:
+
+```json
+{
+  "format": 1,
+  "updated": "2026-10-26",
+  "records": {
+    "sprint10": {"time_ms": 8580, "player": "YourName", "date": "2026-10-26"}
+  }
+}
+```
+
+Bump `updated` whenever records change: the game keeps whichever copy is
+newest.
 
 ## Graphics
 
@@ -211,29 +313,73 @@ Any sound can be replaced by an [asset pack](#asset-packs) or a [mod](#mods).
 
 ## Settings and scores
 
-Settings and best scores are saved automatically to:
+Settings, best scores and speedrun PBs are saved automatically to:
 
 - Linux: `~/.config/opensnake/settings.json`
 - macOS: `~/Library/Application Support/OpenSnake/settings.json`
 - Windows: `%APPDATA%\OpenSnake\settings.json`
 
 Delete the file to reset everything. Settings files from older versions are
-converted automatically.
+converted automatically, including speeds from the old 3-stop slider. The same
+folder holds `speedruns/` (your run files), `custom-categories.json` (your
+saved speedrun categories) and `records-cache.json` (the last world records
+downloaded).
 
 ## Asset packs
 
-An asset pack is a folder of your own images, sounds and colours that replace
-the built-in ones. Anything the pack doesn't provide uses the built-in
-version, so a pack can be as small as one file.
+Asset packs (resource packs) work like Minecraft's. A pack is a folder of
+images, sounds and colours that replace the built-in ones. Anything a pack
+doesn't provide uses the built-in version, so a pack can be as small as one
+file.
 
-OpenSnake looks for a pack in, in order:
+### Turning packs on and off
 
-1. the folder given with `opensnake --assets DIR`
-2. the `OPENSNAKE_ASSETS` environment variable
-3. an `assets` folder next to `settings.json` (see above)
+Press **Packs & Mods** in the menu (or **M**). The left column lists every
+pack the game found, each with an on/off switch. You can enable several at
+once: enabled packs are listed at the top in priority order, and where two
+packs replace the same thing, the higher one wins. Move a pack up or down with
+its `^` `v` buttons or Shift+Up/Down. Changes apply instantly.
 
-Only use files you have the right to use. The `assets/` folder is in
-`.gitignore` so a personal pack is not committed by accident.
+**Open packs folder** opens the folder where your own packs go:
+
+- Linux: `~/.config/opensnake/resourcepacks/`
+- macOS: `~/Library/Application Support/OpenSnake/resourcepacks/`
+- Windows: `%APPDATA%\OpenSnake\resourcepacks\`
+
+Put each pack in its own folder there, e.g. `resourcepacks/my-pack/`, then
+reopen the Packs & Mods screen.
+
+### Built-in packs
+
+OpenSnake ships with three packs, all off by default:
+
+| Pack | Style |
+| --- | --- |
+| **Shadow Venom** | Edgy and cartoonish: a midnight board, a horned blood-red snake with glowing slit eyes and fangs, cursed fruit, tombstones, spiked bombs, a skeleton key and darker sound effects. |
+| **Grave Viper** | Realistic and grim: shaded art with highlights and depth. A dark olive viper with amber slit eyes on charred stone, glossy blood-red apples, a rotting poison apple, stone bricks, a weathered headstone, a rusted naval mine, antique iron keys and padlocks, a battered steel shield and a snake hiss. |
+| **Everforest** | Calm and soft, in the [Everforest](https://github.com/sainnhe/everforest) colour scheme: a muted grey-green board, a sage-to-aqua snake, warm fruit colours, mossy stones and gentle wooden sounds. |
+
+They're in `opensnake/packs/` and are good examples to copy when making your
+own.
+
+### Making a pack
+
+A pack folder can contain any of the files below, plus an optional
+`pack.json` and a `pack.svg` (or `pack.png`) icon shown in the list:
+
+```json
+{
+  "name": "My Pack",
+  "description": "One line shown under the name.",
+  "board_light": "#1c1a22",
+  "snake_head": "#c4122f"
+}
+```
+
+Only use files you have the right to use. The `--assets DIR` option and the
+`OPENSNAKE_ASSETS` environment variable still work and always sit on top of
+the enabled packs. An old `assets` folder next to `settings.json` shows up in
+the list as a pack called "assets".
 
 **Images** (`.svg` recommended, since vectors stay sharp at every size;
 `.png`, `.webp`, `.gif`, `.bmp`, `.jpg` also work). Each fills one board cell,
@@ -271,7 +417,12 @@ so square images work best.
 
 ## Mods
 
-Mods add new game modes, fruits and sounds, written in Python. A mod mode
+Mods add new game modes, fruits and sounds, written in Python. The right
+column of the **Packs & Mods** screen lists every mod found, with its status
+(loaded, failed, off) and an on/off switch. Mods set themselves up when the
+game starts, so turning one on or off takes effect after a restart: the screen
+shows a **Restart now** button when there's a change waiting. **Open mods
+folder** opens the mods folder. A mod mode
 shows up in the menu next to the built-in ones and can be mixed with them in
 Blender.
 
@@ -417,11 +568,15 @@ the view:
 | --- | --- |
 | `opensnake/game.py` | Game rules and simulation. No pygame, easy to test. |
 | `opensnake/modes.py` | Mode list, conflicts, speed curve, board limits, options. |
+| `opensnake/speedrun.py` | Speedrun categories, timer, replays, `--verify` and world records. |
+| `opensnake/records.json` | Speedrun world records. |
 | `opensnake/render.py` | All drawing: board, fruit, snake path, objects, mode icons, the scrolling view. |
 | `opensnake/audio.py` | Sound loading and synthesis. |
 | `opensnake/sounds/` | Bundled sound recordings (see CREDITS.md). |
 | `opensnake/images/` | Bundled SVG artwork (see CREDITS.md). |
 | `opensnake/assets.py` | Asset pack loading. |
+| `opensnake/addons.py` | Finding resource packs and mods for the Packs & Mods screen. |
+| `opensnake/packs/` | Built-in resource packs (Shadow Venom). |
 | `opensnake/mods.py` | Mod loading and the mod API. |
 | `opensnake/registry.py` | Hooks and sounds registered by mods. |
 | `opensnake/app.py` | Window, game loop, menu, HUD, settings. |

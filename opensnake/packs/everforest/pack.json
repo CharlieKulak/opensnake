@@ -1,0 +1,13 @@
+{
+  "name": "Everforest",
+  "description": "The calm Everforest colour scheme: soft greens, warm accents, gentle sounds.",
+  "author": "OpenSnake (palette: Everforest by sainnhe, MIT)",
+  "board_light": "#3d484d",
+  "board_dark": "#343f44",
+  "board_sand": "#4d4c43",
+  "board_sand_dark": "#46453d",
+  "border": "#2d353b",
+  "header": "#232a2e",
+  "snake_head": "#a7c080",
+  "snake_tail": "#83c092"
+}

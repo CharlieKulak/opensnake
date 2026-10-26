@@ -1,0 +1,6 @@
+{
+  "format": 1,
+  "updated": "2026-10-25",
+  "about": "OpenSnake speedrun world records. Times are in-game time in milliseconds. Submit a run file as a GitHub issue; it is verified with `opensnake --verify` before being added here.",
+  "records": {}
+}

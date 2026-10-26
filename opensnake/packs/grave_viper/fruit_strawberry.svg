@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"><defs><radialGradient id="a" cx="0.35" cy="0.3" r="0.75"><stop offset="0" stop-color="#c41a2a"/><stop offset="0.6" stop-color="#6e0610"/><stop offset="1" stop-color="#260206"/></radialGradient><linearGradient id="leaf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4f7a2c"/><stop offset="1" stop-color="#1c3010"/></linearGradient></defs><ellipse cx="32" cy="58" rx="18" ry="4" fill="#000" opacity="0.35"/>
+<path d="M9 22 C7 40 22 59 32 59 C42 59 57 40 55 22 C45 15 19 15 9 22 Z" fill="url(#a)"/>
+<g fill="#e8c46a"><ellipse cx="20" cy="29" rx="1.2" ry="2"/><ellipse cx="32" cy="27" rx="1.2" ry="2"/><ellipse cx="44" cy="29" rx="1.2" ry="2"/>
+<ellipse cx="25" cy="39" rx="1.2" ry="2"/><ellipse cx="39" cy="39" rx="1.2" ry="2"/><ellipse cx="32" cy="50" rx="1.2" ry="2"/></g>
+<ellipse cx="20" cy="31" rx="4" ry="6" fill="#fff" opacity="0.25" transform="rotate(20 20 31)"/>
+<path d="M13 20 L22 8 L28 17 L32 5 L36 17 L42 8 L51 20 Z" fill="url(#leaf)"/></svg>

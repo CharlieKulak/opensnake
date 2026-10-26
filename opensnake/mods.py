@@ -94,9 +94,10 @@ def default_dirs(cli_dir: str | None = None) -> list[Path]:
     return [Path(d).expanduser() for d in dirs if d]
 
 
-def load_mods(dirs) -> list[tuple[str, str | None]]:
-    """Import every mod in ``dirs`` (earlier folders win on name clashes)."""
-    seen = {name for name, _ in LOADED}
+def iter_mods(dirs):
+    """(name, entry point file, folder, package search path) for every mod found,
+    without running any of them. Earlier folders win on name clashes."""
+    seen = set()
     for d in dirs:
         if not d.is_dir():
             continue
@@ -104,27 +105,47 @@ def load_mods(dirs) -> list[tuple[str, str | None]]:
             if entry.name.startswith(("_", ".")):
                 continue
             if entry.is_file() and entry.suffix == ".py":
-                name, path, folder, pkg = entry.stem, entry, d, None
+                found = (entry.stem, entry, d, None)
             elif entry.is_dir() and (entry / "__init__.py").is_file():
-                name, path, folder, pkg = entry.name, entry / "__init__.py", entry, [str(entry)]
+                found = (entry.name, entry / "__init__.py", entry, [str(entry)])
             else:
                 continue
-            if name in seen:
-                continue
-            seen.add(name)
-            try:
-                spec = importlib.util.spec_from_file_location(f"opensnake_mods.{name}", path,
-                                                              submodule_search_locations=pkg)
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[spec.name] = module
-                spec.loader.exec_module(module)
-                setup = getattr(module, "setup", None)
-                if not callable(setup):
-                    raise RuntimeError("the mod has no setup(api) function")
-                setup(ModAPI(name, folder))
-                LOADED.append((name, None))
-            except Exception as e:  # report and carry on without this mod
-                print(f"opensnake: mod '{name}' failed to load:", file=sys.stderr)
-                traceback.print_exc()
-                LOADED.append((name, f"{type(e).__name__}: {e}"))
+            if found[0] not in seen:
+                seen.add(found[0])
+                yield found
+
+
+def describe_mod(path: Path) -> str:
+    """First line of a mod's docstring, read without running the mod."""
+    import ast
+    try:
+        doc = ast.get_docstring(ast.parse(path.read_text()))
+    except (OSError, SyntaxError, ValueError):
+        return ""
+    return (doc or "").strip().split("\n")[0][:120]
+
+
+def load_mods(dirs, disabled=()) -> list[tuple[str, str | None]]:
+    """Import every mod in ``dirs`` except the ``disabled`` names."""
+    seen = {name for name, _ in LOADED}
+    disabled = set(disabled)
+    for name, path, folder, pkg in iter_mods(dirs):
+        if name in seen or name in disabled:
+            continue
+        seen.add(name)
+        try:
+            spec = importlib.util.spec_from_file_location(f"opensnake_mods.{name}", path,
+                                                          submodule_search_locations=pkg)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            setup = getattr(module, "setup", None)
+            if not callable(setup):
+                raise RuntimeError("the mod has no setup(api) function")
+            setup(ModAPI(name, folder))
+            LOADED.append((name, None))
+        except Exception as e:  # report and carry on without this mod
+            print(f"opensnake: mod '{name}' failed to load:", file=sys.stderr)
+            traceback.print_exc()
+            LOADED.append((name, f"{type(e).__name__}: {e}"))
     return LOADED

@@ -40,6 +40,17 @@ icons) is drawn in code. The OpenSnake logo (`opensnake/images/opensnake.svg`,
 `packaging/linux/opensnake.svg`, `opensnake-256.png`) is original to this
 project and BSD 3-Clause licensed like the code.
 
+## Built-in resource packs
+
+All art and sounds in `opensnake/packs/` (Shadow Venom, Grave Viper and
+Everforest) are original to this project: the SVGs were drawn for it and the
+sounds were synthesized with the game's own sound generator. They are BSD
+3-Clause licensed like the code.
+
+The **Everforest** pack uses the colour palette of
+[Everforest](https://github.com/sainnhe/everforest) by sainnhe, which is MIT
+licensed. Only the colour values are used; the artwork is original.
+
 ## Sounds
 
 | File | Source | Author | License |

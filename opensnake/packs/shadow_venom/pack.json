@@ -1,0 +1,13 @@
+{
+  "name": "Shadow Venom",
+  "description": "Midnight board, a horned blood-red snake, cursed fruit, tombstones and spiked bombs.",
+  "author": "OpenSnake",
+  "board_light": "#1c1a22",
+  "board_dark": "#16141b",
+  "board_sand": "#3a1720",
+  "board_sand_dark": "#311219",
+  "border": "#0b0a0e",
+  "header": "#120f16",
+  "snake_head": "#c4122f",
+  "snake_tail": "#3b0410"
+}

@@ -1,0 +1,13 @@
+{
+  "name": "Grave Viper",
+  "description": "Realistic and grim: a black viper, charred stone, blood apples, rusted iron and a headstone.",
+  "author": "OpenSnake",
+  "board_light": "#282624",
+  "board_dark": "#211f1d",
+  "board_sand": "#3e3832",
+  "board_sand_dark": "#37312c",
+  "border": "#141312",
+  "header": "#0f0e0d",
+  "snake_head": "#6e6b5c",
+  "snake_tail": "#3a3830"
+}

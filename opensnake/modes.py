@@ -37,12 +37,20 @@ CONFLICTS = [("sokoban", "portal"), ("sokoban", "poison"), ("portal", "poison")]
 # Board size limits (cells). Any rectangle in this range works.
 MIN_BOARD_W, MIN_BOARD_H = 8, 5
 MAX_BOARD = 1000
-DEFAULT_BOARD = (17, 15)
+DEFAULT_BOARD = (10, 9)
 
-# Speed is a slider from 0.0 (slow) to 1.0 (fast); these are the labelled ticks
-# as (slider position, label, milliseconds per cell).
-SPEED_TICKS = [(0.0, "Slow", 170), (0.5, "Default", 130), (1.0, "Fast", 85)]
+# Speed is a slider from 0.0 (slowest) to 1.0 (fastest); these are the labelled
+# ticks as (slider position, label, milliseconds per cell).
+SPEED_TICKS = [(0.0, "Slowest", 260), (0.25, "Slow", 170), (0.5, "Default", 130),
+               (0.75, "Fast", 85), (1.0, "Fastest", 45)]
 DEFAULT_SPEED = 0.5
+# Settings saved before the slider was widened used 0 = Slow, 1 = Fast.
+SPEED_SCALE_VERSION = 2
+
+
+def migrate_speed_v1(value: float) -> float:
+    """Convert a speed from the old 3-stop slider to the same speed on this one."""
+    return round(0.25 + 0.5 * min(1.0, max(0.0, value)), 3)
 
 # Settings files from older versions used named sizes and speeds.
 LEGACY_SIZES = {"small": (10, 9), "medium": (17, 15), "large": (24, 21)}
@@ -56,7 +64,6 @@ def speed_ms(value: float) -> float:
         if value <= p1:
             return m0 + (m1 - m0) * (value - p0) / (p1 - p0)
     return SPEED_TICKS[-1][2]
-
 
 
 SNAKE_COLORS = {

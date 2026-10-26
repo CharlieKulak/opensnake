@@ -37,15 +37,24 @@ LEAF = (76, 175, 55)
 STEM = (107, 68, 35)
 
 
+_DEFAULT_COLORS = {"board_light": LIGHT, "board_dark": DARK, "board_sand": SAND,
+                   "board_sand_dark": SAND_DARK, "border": BORDER, "header": HEADER}
+
+
 def apply_pack_colors(pack) -> None:
-    """Let an asset pack's pack.json recolour the board."""
+    """Recolour the board from the enabled packs' pack.json files.
+
+    Starts from the built-in colours every time, so turning a pack off puts
+    the defaults back.
+    """
     global LIGHT, DARK, SAND, SAND_DARK, BORDER, HEADER
-    LIGHT = pack.color("board_light", LIGHT)
-    DARK = pack.color("board_dark", DARK)
-    SAND = pack.color("board_sand", SAND)
-    SAND_DARK = pack.color("board_sand_dark", SAND_DARK)
-    BORDER = pack.color("border", BORDER)
-    HEADER = pack.color("header", HEADER)
+    d = _DEFAULT_COLORS
+    LIGHT = pack.color("board_light", d["board_light"])
+    DARK = pack.color("board_dark", d["board_dark"])
+    SAND = pack.color("board_sand", d["board_sand"])
+    SAND_DARK = pack.color("board_sand_dark", d["board_sand_dark"])
+    BORDER = pack.color("border", d["border"])
+    HEADER = pack.color("header", d["header"])
 
 
 def mix(c1, c2, t):

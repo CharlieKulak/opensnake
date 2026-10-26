@@ -23,4 +23,5 @@ opensnake = "opensnake.app:main"
 include = ["opensnake*"]
 
 [tool.setuptools.package-data]
-opensnake = ["sounds/*.ogg", "sounds/*.wav", "images/*.svg", "images/*.txt"]
+opensnake = ["sounds/*.ogg", "sounds/*.wav", "images/*.svg", "images/*.txt", "records.json",
+             "packs/*/*.svg", "packs/*/*.wav", "packs/*/*.ogg", "packs/*/*.png", "packs/*/*.json"]
