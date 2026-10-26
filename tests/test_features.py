@@ -149,7 +149,7 @@ class MainLoopTests(unittest.TestCase):
         import pygame
         from opensnake.app import App
         with tempfile.TemporaryDirectory() as d:
-            os.environ["XDG_CONFIG_HOME"] = d
+            os.environ["OPENSNAKE_CONFIG_DIR"] = str(Path(d) / "opensnake")
             app = App()
             if setup:
                 setup(app)
@@ -172,7 +172,7 @@ class CustomSpeedrunAppTests(unittest.TestCase):
         from opensnake.app import App
         from opensnake.speedrun import load_custom_categories
         with tempfile.TemporaryDirectory() as d:
-            os.environ["XDG_CONFIG_HOME"] = d
+            os.environ["OPENSNAKE_CONFIG_DIR"] = str(Path(d) / "opensnake")
             app = App()
             s = app.settings
             s.update(speedrun_mode=True, sr_goal=7, modes=["wall"], board_w=12, board_h=10)
@@ -204,7 +204,7 @@ class CustomSpeedrunAppTests(unittest.TestCase):
 class PacksAndModsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        os.environ["XDG_CONFIG_HOME"] = self.tmp.name
+        os.environ["OPENSNAKE_CONFIG_DIR"] = str(Path(self.tmp.name) / "opensnake")
 
     def tearDown(self):
         self.tmp.cleanup()

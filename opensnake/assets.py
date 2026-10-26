@@ -31,6 +31,13 @@ COLOR_KEYS = ("board_light", "board_dark", "board_sand", "board_sand_dark", "bor
 
 
 def config_dir() -> Path:
+    """Where settings, scores, runs, packs and mods live.
+
+    OPENSNAKE_CONFIG_DIR overrides it on every platform (portable installs, tests).
+    """
+    override = os.environ.get("OPENSNAKE_CONFIG_DIR")
+    if override:
+        return Path(override)
     if sys.platform == "win32":
         return Path(os.environ.get("APPDATA", Path.home())) / "OpenSnake"
     if sys.platform == "darwin":

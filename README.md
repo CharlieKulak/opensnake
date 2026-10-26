@@ -319,7 +319,9 @@ Settings, best scores and speedrun PBs are saved automatically to:
 - macOS: `~/Library/Application Support/OpenSnake/settings.json`
 - Windows: `%APPDATA%\OpenSnake\settings.json`
 
-Delete the file to reset everything. Settings files from older versions are
+To keep everything in another folder instead (for example a portable copy on
+a USB stick), set the `OPENSNAKE_CONFIG_DIR` environment variable to that
+folder. Delete the file to reset everything. Settings files from older versions are
 converted automatically, including speeds from the old 3-stop slider. The same
 folder holds `speedruns/` (your run files), `custom-categories.json` (your
 saved speedrun categories) and `records-cache.json` (the last world records
