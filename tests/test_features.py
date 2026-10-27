@@ -293,3 +293,63 @@ class BuiltinPackContentTests(unittest.TestCase):
             pack = AssetPack([folder])
             self.assertIsNotNone(pack.sound("eat"), folder.name)
             self.assertIn("board_light", pack.colors, folder.name)
+
+
+class TurnResponseTests(unittest.TestCase):
+    """Turning stays quick at slow speeds (the snake finishes its cell fast when a turn waits)."""
+
+    def turn_delay(self, speed, boost=True):
+        import pygame
+        from opensnake import app as app_module
+        from opensnake.app import App
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["OPENSNAKE_CONFIG_DIR"] = d
+            app = App()
+            app.settings["speed"] = speed
+            app.play()
+            if not boost:
+                app.turn_boost = lambda: 1.0
+            g = app.game
+            key = lambda k: app.handle(pygame.event.Event(pygame.KEYDOWN, key=k, mod=0, unicode=""))
+            key(pygame.K_RIGHT)               # start moving
+            while g.tick < 2:                 # get into a steady rhythm
+                app.update(16)
+            while app.acc > 1:                # worst case: a new cell has only just started
+                app.update(1)
+            key(pygame.K_UP)
+            waited = 0
+            while g.snakes[0].dir != "up":
+                app.update(16)
+                waited += 16
+            self.assertIs(app_module.App, App)
+            return waited
+
+    def test_slow_speeds_turn_quickly(self):
+        slowest_plain = self.turn_delay(0.0, boost=False)
+        slowest = self.turn_delay(0.0)
+        self.assertGreaterEqual(slowest_plain, 240)  # about one 260 ms cell without the boost
+        self.assertLessEqual(slowest, 100)           # about one 85 ms Fast cell with it
+        self.assertLessEqual(self.turn_delay(0.25), 100)  # Slow
+        self.assertLessEqual(self.turn_delay(0.5), 100)   # Default
+
+    def test_fast_speeds_unchanged(self):
+        self.assertEqual(self.turn_delay(1.0), self.turn_delay(1.0, boost=False))
+
+    def test_speedrun_time_counts_moves_not_boost(self):
+        import pygame
+        from opensnake.app import App
+        from opensnake.speedrun import CATEGORY_BY_ID
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["OPENSNAKE_CONFIG_DIR"] = d
+            app = App()
+            app.start_run(CATEGORY_BY_ID["accelerate"])  # starts at 170 ms per cell
+            key = lambda k: app.handle(pygame.event.Event(pygame.KEYDOWN, key=k, mod=0, unicode=""))
+            key(pygame.K_UP)
+            for k in (pygame.K_RIGHT, pygame.K_DOWN):
+                for _ in range(12):
+                    app.update(16)
+                key(k)
+            for _ in range(20):
+                app.update(16)
+            run = app.attempt
+            self.assertEqual(run.elapsed, run.game.tick * 170)  # every move counted at full length

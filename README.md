@@ -343,6 +343,14 @@ cell. A key pressed before that point turns at the next cell; a key pressed
 after it turns one cell later. Up to three turns can be queued, so quick
 double-taps (for example a U-turn) work.
 
+Turning stays quick at every speed. The snake can only turn at a cell
+boundary, so at slow speeds a turn could wait for most of a slow cell. Instead,
+while a turn is waiting, the snake glides through the rest of its current cell
+at the Fast speed, turns, then carries on at the speed you picked. The longest
+wait before a turn is about a tenth of a second at any speed. Speedrun times
+aren't affected: the timer counts each move at the category's speed. (In
+versus, the server moves everyone together, so this doesn't apply there.)
+
 ## Sounds
 
 Eating plays one of five real crunch recordings, picked at random each time so

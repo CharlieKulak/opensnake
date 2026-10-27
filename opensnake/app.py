@@ -104,6 +104,10 @@ NUMBERS = {"apple_count": ("Count", 1, MAX_FRUIT), "sr_goal": ("Goal", 0, 9999),
 # Smallest cell size before a big board starts scrolling instead of shrinking.
 MIN_CELL = 20
 
+# When a turn is waiting, finish the current cell at least this fast, so
+# turning stays snappy at slow speeds (it's the Fast speed's time per cell).
+TURN_CELL_MS = 85
+
 OPTIONS = [
     ("fruit", "Fruit", list(FRUIT_LABELS), lambda v: FRUIT_LABELS[v]),
     ("color", "Snake", list(SNAKE_COLORS), lambda v: SNAKE_COLORS[v][2]),
@@ -419,6 +423,20 @@ class App:
         self.state = "speedrun"
         self.attempt = None
         self.new_game()
+
+    def turn_boost(self) -> float:
+        """How much faster to move while a turn is waiting (1.0 = normal).
+
+        At slow speeds the snake can only turn at the next cell, which could
+        take a quarter of a second. While a turn is queued it glides through
+        the rest of its cell at the Fast speed instead, then carries on at the
+        chosen speed. Speedrun times aren't affected: they count moves, not
+        real time.
+        """
+        ms = self.tick_ms()
+        if ms > TURN_CELL_MS and any(s.queue or s.planned for s in self.game.snakes):
+            return ms / TURN_CELL_MS
+        return 1.0
 
     def tick_ms(self) -> float:
         if self.state == "versus":
@@ -1541,7 +1559,7 @@ class App:
         if self.state != "play" or self.paused or not g.started or g.over:
             self.drain()
             return
-        self.acc += dt
+        self.acc += dt * self.turn_boost()
         while self.acc >= (ms := self.tick_ms()):
             self.acc -= ms
             (self.attempt or g).step()
