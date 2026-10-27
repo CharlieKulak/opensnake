@@ -1,0 +1,48 @@
+# systemd service for the OpenSnake server (website, accounts, records, versus).
+#
+# Set up for a repository cloned to /root/opensnake with its .venv created as
+# described in web-support/README.md. If yours is elsewhere, change the paths
+# below (WorkingDirectory, ExecStart and ReadWritePaths).
+#
+# Install:
+#   cp web-support/opensnake.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now opensnake
+#
+# Build the web game before starting it, and again after each update
+# (the build needs internet; the service only runs the server):
+#   PYTHON=.venv/bin/python web-support/build.sh
+
+[Unit]
+Description=OpenSnake server (website, accounts, records, versus)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/opensnake
+# Create the data folder first ("+" runs this outside the sandbox below,
+# which needs the folder to exist and makes everything else read-only).
+ExecStartPre=+/usr/bin/mkdir -p /root/opensnake/web-support/data
+# 127.0.0.1: only reachable through your HTTPS proxy on this machine.
+# Use 0.0.0.0 instead to serve the local network directly.
+ExecStart=/root/opensnake/.venv/bin/python -m opensnake.server --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+# Show output in `journalctl -u opensnake` straight away.
+Environment=PYTHONUNBUFFERED=1
+
+# Sandboxing: the server only needs to write its own data folder.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/root/opensnake/web-support/data
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

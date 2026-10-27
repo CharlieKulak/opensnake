@@ -19,6 +19,7 @@ websites running OpenSnake have completely separate logins and leaderboards.
 | `build.sh` | Builds the browser game into `build/`; with `--serve` it then starts the OpenSnake server |
 | `main.py` | The browser entry point that starts the game |
 | `serve.py` | A plain file server for the release download (no accounts, records or versus) |
+| `opensnake.service` | systemd service to run the server in the background on Linux |
 | `build/` | Build output. Ignored by git, safe to delete |
 | `data/` | The server's accounts and records (`opensnake.db`). Ignored by git; back it up |
 
@@ -71,12 +72,48 @@ To start the server again without rebuilding:
 
 **To stop it**, press Ctrl+C.
 
+### Run it as a service (Linux, systemd)
+
+`web-support/opensnake.service` keeps the server running in the background,
+restarts it if it crashes and starts it when the computer boots. It's set up
+for a repository at `/root/opensnake`; if yours is elsewhere, edit the paths
+in the file first.
+
+```sh
+cd /root/opensnake
+PYTHON=.venv/bin/python web-support/build.sh        # build the web game (needs internet)
+cp web-support/opensnake.service /etc/systemd/system/
+systemd-analyze verify /etc/systemd/system/opensnake.service   # optional check
+systemctl daemon-reload
+systemctl enable --now opensnake
+```
+
+| To... | Run |
+| --- | --- |
+| See if it's running | `systemctl status opensnake` |
+| Watch its output | `journalctl -u opensnake -f` |
+| Restart it (after an update) | `systemctl restart opensnake` |
+| Stop it / stop starting at boot | `systemctl stop opensnake` / `systemctl disable opensnake` |
+
+The service listens on `127.0.0.1:8000` for your HTTPS proxy and can only write
+to `web-support/data/`. When it's running this way, don't also start it with
+`build.sh --serve`: the port would already be in use.
+
 ### Updating
 
 ```sh
 git pull
 .venv/bin/pip install -e ".[server]"
 PYTHON=.venv/bin/python web-support/build.sh --serve
+```
+
+With the systemd service, rebuild and restart instead:
+
+```sh
+git pull
+.venv/bin/pip install -e ".[server]"
+PYTHON=.venv/bin/python web-support/build.sh
+systemctl restart opensnake
 ```
 
 Accounts and records in `web-support/data/` are kept across updates.
