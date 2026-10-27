@@ -484,6 +484,12 @@ Blender.
 > **Mods are ordinary Python code and can do anything a program on your
 > computer can do. Only install mods from people you trust.**
 
+Mods are for offline play. While any mod is on, the game won't host or join
+versus matches or submit speedruns to a site, and the Online screen says so.
+Turn mods off in Packs & Mods and restart to play online. Resource packs are
+fine online: they only change how the game looks and sounds. Servers also
+reject any run whose custom category uses a mode that isn't built in.
+
 ### Installing a mod
 
 Put the mod in a mods folder and start OpenSnake. It looks in:

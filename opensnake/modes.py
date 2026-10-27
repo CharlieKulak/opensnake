@@ -29,6 +29,8 @@ MODES = [
     ("gate", "Gate", "Gates open and close on a timer. Time your runs."),
     ("peaceful", "Peaceful", "No game over. Crashing just stops you until you turn."),
 ]
+# The modes that ship with the game, fixed before any mod can add to MODES.
+BUILTIN_MODE_IDS = frozenset(m[0] for m in MODES) - {"classic"}
 MODE_NAMES = {m[0]: m[1] for m in MODES}
 MODE_DESCS = {m[0]: m[2] for m in MODES}
 
@@ -116,7 +118,10 @@ def blend_modes(rng=random) -> set[str]:
 def mode_label(modes) -> str:
     if not modes:
         return "Classic"
-    names = [MODE_NAMES[m] for m in MODES_ORDER if m in modes]
+    known = [MODE_NAMES[m] for m in MODES_ORDER if m in modes]
+    # Modes nobody registered (e.g. from a mod that's turned off) show by their id.
+    unknown = sorted(str(m) for m in modes if m not in MODE_NAMES)
+    names = known + unknown
     return "Blender: " + " + ".join(names) if len(names) > 1 else names[0]
 
 

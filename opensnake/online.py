@@ -208,8 +208,19 @@ class Online:
         self.save_login("", "")
         self.say("Logged out.")
 
+    @property
+    def mods_on(self) -> list[str]:
+        """Mods loaded in this game. Mods run their own code, so they're not allowed online."""
+        return [name for name, err in getattr(self.app, "mod_results", []) if err is None]
+
+    MODS_MESSAGE = "Mods are on. Turn them off in Packs & Mods and restart to play online."
+
     def submit_run(self, run_json: dict, report) -> None:
         """Send a finished speedrun to this site's leaderboard; report(text, color) with the outcome."""
+        if self.mods_on:
+            report("Not submitted: mods are on (turn them off to submit runs).", BAD)
+            return
+
         def done(r):
             if not r.ok:
                 report(f"Not submitted: {r.message}", BAD)
@@ -331,6 +342,9 @@ class Online:
     # ---- actions --------------------------------------------------------------------------
 
     def host(self) -> None:
+        if self.mods_on:
+            self.say(self.MODS_MESSAGE, BAD)
+            return
         if self.server_state != "ok":
             self.say("Connect to a server first.", BAD)
             return
@@ -339,7 +353,9 @@ class Online:
 
     def join(self) -> None:
         code = self.fields["code"].value.strip().upper()
-        if self.server_state != "ok":
+        if self.mods_on:
+            self.say(self.MODS_MESSAGE, BAD)
+        elif self.server_state != "ok":
             self.say("Connect to a server first.", BAD)
         elif len(code) != 4:
             self.say("Match codes are 4 letters.", BAD)
@@ -592,7 +608,7 @@ class Online:
         # versus
         self._text("Versus (1v1 up to 4v4)", sec, INK, topleft=(x, y))
         y += sec + 8
-        ok = self.server_state == "ok"
+        ok = self.server_state == "ok" and not self.mods_on
         self._button(pygame.Rect(x, y, int(w * 0.3), row), "Host a match", self.host, True, ok)
         cx = x + int(w * 0.36)
         self._text("or join with a code:", ph * 0.026, MUTED, midleft=(cx, y + row / 2))
@@ -602,7 +618,11 @@ class Online:
         name_hint = (f"You'll play as {self.user}." if self.logged_in else
                      "Not logged in: you'll play as a guest" +
                      (f" named {self.fields['username'].value}." if self.fields["username"].value else "."))
-        self._text(name_hint, ph * 0.022, MUTED, topleft=(x, y))
+        if self.mods_on:
+            self._text("Mods are on (" + ", ".join(self.mods_on) + "), so versus and submitting runs are off. "
+                       "Turn mods off in Packs & Mods and restart.", ph * 0.022, BAD, topleft=(x, y))
+        else:
+            self._text(name_hint, ph * 0.022, MUTED, topleft=(x, y))
 
         if self.message:
             self._text(self.message, ph * 0.028, self.message_color, midbottom=(p.centerx, p.bottom - ph * 0.13))

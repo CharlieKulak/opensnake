@@ -353,3 +353,39 @@ class TurnResponseTests(unittest.TestCase):
                 app.update(16)
             run = app.attempt
             self.assertEqual(run.elapsed, run.game.tick * 170)  # every move counted at full length
+
+
+class ModsOnlineTests(unittest.TestCase):
+    """With any mod loaded, the game doesn't play or submit online."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["OPENSNAKE_CONFIG_DIR"] = self.tmp.name
+        from opensnake.app import App
+        self.app = App()
+        self.on = self.app.online
+        self.on.server_state = "ok"
+        self.sent = []
+        self.on.send = self.sent.append
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_blocked_with_mods(self):
+        self.app.mod_results = [("hunger", None), ("broken", "SyntaxError")]  # one loaded, one failed
+        self.assertEqual(self.on.mods_on, ["hunger"])
+        self.on.host()
+        self.on.fields["code"].value = "ABCD"
+        self.on.join()
+        self.assertEqual(self.sent, [])
+        self.assertIn("Mods are on", self.on.message)
+        reports = []
+        self.on.request = lambda *a, **k: self.fail("must not contact the server")
+        self.on.submit_run({"category": "sprint10"}, lambda text, color: reports.append(text))
+        self.assertIn("mods are on", reports[0])
+
+    def test_allowed_without_mods(self):
+        self.app.mod_results = [("broken", "SyntaxError")]  # failed mods don't count
+        self.assertEqual(self.on.mods_on, [])
+        self.on.host()
+        self.assertEqual(self.sent[0]["t"], "host")

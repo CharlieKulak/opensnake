@@ -203,3 +203,18 @@ class VersusTests(ServerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModsOfflineOnlyTests(ServerTestCase):
+    async def test_runs_with_mod_modes_are_rejected(self):
+        from opensnake.speedrun import make_custom
+        token = await self.account()
+        cat = make_custom(10, 9, ["somemod"], 3, 1, 130)  # "somemod" isn't a built-in mode
+        run = bot_run(cat, 4, random.Random(3))
+        self.assertTrue(run.finished)
+        status, res = await self.post("/api/runs", run.to_json(), token)
+        self.assertEqual(status, 400)
+        self.assertIn("mods", res["error"])
+        ok = make_custom(10, 9, ["wall"], 3, 1, 130)  # built-in modes are fine
+        res = (await self.post("/api/runs", bot_run(ok, 4, random.Random(3)).to_json(), token))[1]
+        self.assertTrue(res.get("valid"), res)

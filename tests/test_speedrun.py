@@ -202,3 +202,14 @@ class SiteRecordsTests(unittest.TestCase):
         r.clear_server()
         self.assertEqual(r.records, offline)
         self.assertNotEqual(r.source.split(":")[0], "site")
+
+
+class UnknownModeTests(unittest.TestCase):
+    def test_saved_category_with_a_removed_mods_mode_still_loads(self):
+        from opensnake.speedrun import load_custom_categories, make_custom, save_custom_categories
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "custom-categories.json"
+            save_custom_categories(path, [make_custom(10, 9, ["somemod", "wall"], 5, 1, 130, name="Old mod run")])
+            loaded = load_custom_categories(path)  # used to crash once the mod was turned off
+        self.assertEqual(loaded[0].name, "Old mod run")
+        self.assertIn("somemod", loaded[0].desc)

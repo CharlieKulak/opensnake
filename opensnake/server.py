@@ -37,7 +37,7 @@ from aiohttp import WSMsgType, web
 
 from . import __version__
 from .game import DIRS, Game, game_to_state
-from .modes import speed_ms
+from .modes import BUILTIN_MODE_IDS, speed_ms
 from .speedrun import CATEGORY_BY_ID, CUSTOM_PREFIX, verify
 
 REPO = Path(__file__).resolve().parents[1]
@@ -382,6 +382,11 @@ class Server:
         category = str(run.get("category", ""))
         if category not in CATEGORY_BY_ID and not category.startswith(CUSTOM_PREFIX):
             return self.error("Unknown category.")
+        # Only built-in modes count online: mod modes (or anything else) can't set records.
+        definition = run.get("category_def") if isinstance(run.get("category_def"), dict) else {}
+        modes = definition.get("modes", [])
+        if not isinstance(modes, list) or any(m not in BUILTIN_MODE_IDS for m in modes):
+            return self.error("Runs using mods or unknown modes can't be submitted.")
         # Replaying can take a moment for long runs; keep the server responsive meanwhile.
         ok, message = await asyncio.get_running_loop().run_in_executor(None, verify, run)
         if not ok:
