@@ -11,7 +11,7 @@ import urllib.parse
 
 import pygame
 
-from .game import Game, apply_state
+from .game import DIRS, OPPOSITE, Game, apply_state
 from .modes import MODE_NAMES
 from .net import WEB, Request, Socket, page_origin, set_page_title, web_storage_get, web_storage_set, ws_url
 
@@ -89,6 +89,9 @@ class Online:
         self.tick_ms = 130.0
         self.countdown: int | None = None
         self.result: dict | None = None
+        # Turns we've sent but the server hasn't applied yet: [(direction, sent_at_ms)].
+        # They're shown on our own snake straight away (client-side prediction).
+        self.pending: list[tuple[str, int]] = []
         self.load_login()
         if self.server:
             self.check_server()
@@ -233,7 +236,17 @@ class Online:
                 for m in self.outbox:
                     self.sock.send(m)
                 self.outbox.clear()
-            for msg in self.sock.poll():
+            msgs = self.sock.poll()
+            # If several game states arrived since last frame (slow device, busy
+            # network), only draw the newest; keep the sounds/effects of the rest.
+            states = [i for i, m in enumerate(msgs) if m.get("t") == "state"]
+            carried = []
+            for i, msg in enumerate(msgs):
+                if msg.get("t") == "state" and states and i != states[-1]:
+                    carried += msg["s"].get("events", [])
+                    continue
+                if carried and msg.get("t") == "state":
+                    msg["s"]["events"] = carried + msg["s"].get("events", [])
                 self.on_message(msg)
             if self.sock.state in ("closed", "error"):
                 lost = self.sock.state == "error" or self.room is not None
@@ -276,6 +289,7 @@ class Online:
             self._colour(g)
             self.game, self.you, self.tick_ms = g, m["you"], float(m["tick_ms"])
             self.countdown, self.result = 3, None
+            self.pending = []
             app.game = g
             app.acc = 0.0
             app.state = "versus"
@@ -286,6 +300,7 @@ class Online:
         elif t == "state" and self.game:
             apply_state(self.game, m["s"])
             self._colour(self.game)
+            self._predict()
             app.acc = 0.0
             app.drain()
         elif t == "over":
@@ -411,12 +426,41 @@ class Online:
         elif self.focus == "code":
             self.join()
 
+    def _my_snake(self):
+        g = self.game
+        return g.snakes[self.you] if g and 0 <= self.you < len(g.snakes) else None
+
+    def _predict(self) -> None:
+        """Show our not-yet-applied turn on our own snake, so it reacts instantly."""
+        me = self._my_snake()
+        if not me or me.dead:
+            self.pending = []
+            return
+        now = pygame.time.get_ticks()
+        if self.pending and me.dir == self.pending[0][0]:
+            self.pending.pop(0)  # the server has applied it
+        # Drop turns the server evidently didn't take (e.g. an illegal reverse).
+        self.pending = [(d, at) for d, at in self.pending if now - at < 3 * self.tick_ms + 250]
+        if self.pending:
+            me.planned = self.pending[0][0]  # the renderer curves the head this way
+
+    def turn(self, d: str) -> None:
+        me = self._my_snake()
+        if not me or me.dead or self.game.over:
+            return
+        last = self.pending[-1][0] if self.pending else me.dir
+        if d in (last, OPPOSITE[last]) or d not in DIRS or len(self.pending) >= 2:
+            return  # same as the server would ignore
+        self.send({"t": "input", "d": d})
+        self.pending.append((d, pygame.time.get_ticks()))
+        self._predict()
+        self.app.sfx.play("turn")
+
     def versus_key(self, ev) -> None:
         from .app import KEYMAP
         if ev.key in KEYMAP:
             if self.game and not self.game.over:
-                self.send({"t": "input", "d": KEYMAP[ev.key]})
-                self.app.sfx.play("turn")
+                self.turn(KEYMAP[ev.key])
         elif ev.key in (pygame.K_q, pygame.K_ESCAPE) and (self.result or ev.key == pygame.K_q):
             self.leave()
         elif ev.key in (pygame.K_RETURN, pygame.K_SPACE) and self.result and self.is_host():

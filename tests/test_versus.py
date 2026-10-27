@@ -121,3 +121,96 @@ class StateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PredictionTests(unittest.TestCase):
+    """The joining player's own snake reacts to their keys at once (client-side prediction)."""
+
+    def setUp(self):
+        import os
+        import tempfile
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["OPENSNAKE_CONFIG_DIR"] = self.tmp.name
+        from opensnake.app import App
+        self.app = App()
+        self.on = self.app.online
+        self.server = Game(20, 16, (), 1, rng=random.Random(1), teams=[0, 1])  # stands in for the server
+        self.sent = []
+
+        class FakeSocket:
+            state = "open"
+            inbox = []
+            def send(_, m): self.sent.append(m)
+            def poll(_):
+                out, FakeSocket.inbox = FakeSocket.inbox, []
+                return out
+        self.sock = FakeSocket
+        self.on.sock = FakeSocket()
+        self.on.my_id = 1
+        self.on.on_message({"t": "start", "you": 1, "tick_ms": 130, "state": game_to_state(self.server)})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def server_step(self):
+        for m in self.sent:
+            if m["t"] == "input":
+                self.server.input_for(1, m["d"])
+        self.sent.clear()
+        self.server.started = True
+        self.server.step()
+        return {"t": "state", "s": game_to_state(self.server)}
+
+    def test_turn_shows_immediately_then_server_confirms(self):
+        me = lambda: self.on.game.snakes[1]
+        self.assertEqual(me().dir, "left")
+        self.on.turn("up")
+        self.assertEqual(self.sent, [{"t": "input", "d": "up"}])  # still sent to the server
+        self.assertEqual(me().planned, "up")                       # ...but shown right away
+        self.on.on_message(self.server_step())                     # server applies it
+        self.assertEqual(me().dir, "up")
+        self.assertEqual(self.on.pending, [])
+
+    def test_prediction_survives_states_until_applied(self):
+        self.on.turn("down")
+        self.sent.clear()  # pretend the input is still on its way: the server hasn't seen it
+        self.server.started = True
+        self.server.step()
+        self.on.on_message({"t": "state", "s": game_to_state(self.server)})
+        self.assertEqual(self.on.game.snakes[1].dir, "left")
+        self.assertEqual(self.on.game.snakes[1].planned, "down")  # still predicted
+
+    def test_unapplied_turn_is_dropped_eventually(self):
+        import pygame
+        self.on.turn("up")
+        self.sent.clear()
+        self.on.pending = [("up", pygame.time.get_ticks() - 10_000)]  # sent long ago, never applied
+        self.server.started = True
+        self.server.step()
+        self.on.on_message({"t": "state", "s": game_to_state(self.server)})
+        self.assertEqual(self.on.pending, [])
+        self.assertIsNone(self.on.game.snakes[1].planned)
+
+    def test_reverse_is_not_predicted(self):
+        self.on.turn("right")  # straight back into yourself: the server ignores it, so do we
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.on.pending, [])
+
+    def test_backlog_draws_only_the_newest_state(self):
+        self.server.started = True
+        h = self.server.snakes[1].head
+        self.server.apples.append(Apple(h.x - 1, h.y, "apple", 99))
+        msgs = [self.server_step() for _ in range(3)]  # first one has an "eat" event
+        self.assertTrue(any(e[0] == "eat" for e in msgs[0]["s"]["events"]))
+        applied = []
+        real = self.on.on_message
+        self.on.on_message = lambda m: (applied.append(m["t"]), real(m))
+        self.sock.inbox = msgs
+        played = []
+        self.app.sfx.play = played.append
+        self.on.poll()
+        self.assertEqual(applied, ["state"])                      # one state drawn, not three
+        self.assertEqual(self.on.game.tick, self.server.tick)     # the newest one
+        self.assertIn("eat", played)                              # the skipped one's sound still plays
