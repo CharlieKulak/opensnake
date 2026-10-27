@@ -82,6 +82,9 @@ class Database:
         """)
         self.db.commit()
 
+    def close(self) -> None:
+        self.db.close()
+
     @staticmethod
     def _hash(password: str, salt: bytes) -> bytes:
         return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 120_000)
@@ -304,6 +307,7 @@ class Server:
 
     def app(self) -> web.Application:
         app = web.Application(client_max_size=4 * 1024 * 1024)
+        app.on_cleanup.append(self.shutdown)
         r = app.router
         r.add_get("/api/info", self.info)
         r.add_post("/api/register", self.register)
@@ -318,6 +322,14 @@ class Server:
             r.add_get("/", self.index)
             r.add_static("/", self.web_dir)
         return app
+
+    async def shutdown(self, app: web.Application) -> None:
+        """Stop running matches and close the database (Windows can't delete open files)."""
+        for room in list(self.rooms.values()):
+            if room.task:
+                room.task.cancel()
+        self.rooms.clear()
+        self.db.close()
 
     # -- web game
     async def index(self, request: web.Request) -> web.StreamResponse:

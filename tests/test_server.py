@@ -45,6 +45,15 @@ class ServerTestCase(unittest.IsolatedAsyncioTestCase):
         return data["token"]
 
 
+class ShutdownTests(ServerTestCase):
+    async def test_database_is_closed_on_shutdown(self):
+        await self.account()
+        await self.client.close()  # runs the server's clean-up
+        db = Path(self.tmp.name) / "a" / "opensnake.db"
+        db.rename(db.with_suffix(".moved"))  # Windows refuses this while the file is still open
+        self.client = await self.make_client(Path(self.tmp.name) / "a")  # asyncTearDown closes this one
+
+
 class AccountTests(ServerTestCase):
     async def test_register_login_me_logout(self):
         token = await self.account()
