@@ -9,12 +9,16 @@ description = "A free, open-source desktop snake game with 19 combinable game mo
 readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.10"
-dependencies = ["pygame-ce>=2.4"]
+dependencies = ["pygame-ce>=2.4", "websockets>=13"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Games/Entertainment :: Arcade",
     "Operating System :: OS Independent",
 ]
+
+[project.optional-dependencies]
+# Only needed to run the OpenSnake server (website, accounts, records, versus).
+server = ["aiohttp>=3.9"]
 
 [project.scripts]
 opensnake = "opensnake.app:main"

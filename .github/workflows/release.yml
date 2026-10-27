@@ -39,7 +39,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install
-        run: python -m pip install . "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
+        # [server] so the server tests run too; the standalone game doesn't bundle it
+        run: python -m pip install ".[server]" "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
 
       - name: Test
         run: python -m unittest discover tests
@@ -51,6 +52,7 @@ jobs:
           if [ "$RUNNER_OS" = "macOS" ]; then mode=--onedir; else mode=--onefile; fi
           pyinstaller --noconfirm --clean --windowed $mode --name OpenSnake \
             --paths . --collect-submodules opensnake --collect-data opensnake \
+            --collect-submodules websockets --exclude-module opensnake.server --exclude-module aiohttp \
             packaging/launcher.py
 
       - name: Package

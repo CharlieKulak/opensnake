@@ -330,6 +330,20 @@ class Records:
     def get(self, category_id: str) -> dict | None:
         return self.records.get(category_id)
 
+    def set_server(self, records: dict, site: str) -> None:
+        """Use a website's own leaderboard (from its OpenSnake server) instead of records.json."""
+        if not hasattr(self, "_offline"):
+            self._offline = (self.records, self.updated, self.source)
+        clean = {cid: r for cid, r in records.items()
+                 if isinstance(r, dict) and isinstance(r.get("time_ms"), int)}
+        self.records, self.updated, self.source = clean, "", f"site:{site}"
+
+    def clear_server(self) -> None:
+        """Back to the records.json world records (e.g. after disconnecting from a site)."""
+        if hasattr(self, "_offline"):
+            self.records, self.updated, self.source = self._offline
+            del self._offline
+
     def refresh_in_background(self, url: str = RECORDS_URL, timeout: float = 4.0) -> None:
         def work():
             try:

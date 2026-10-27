@@ -1,115 +1,161 @@
-# OpenSnake in a web browser
+# OpenSnake website and server
 
-This folder builds the browser version of OpenSnake and serves it so anyone on
-your local network can play it at an address like `http://192.168.1.248:8000/`.
-It uses [pygbag](https://pypi.org/project/pygbag/), which packages the
-pygame game to run in the browser with WebAssembly. The game code itself is the
-same as the desktop version (`../opensnake/`).
+This folder builds the browser version of OpenSnake and runs the **OpenSnake
+server**, which serves the game and adds the online features:
+
+- **Accounts**: players create a username and password and stay logged in on
+  that browser.
+- **Site world records**: logged-in players' speedrun times go on this site's
+  own leaderboards. Every run is replayed by the server to check the time
+  before it counts.
+- **Versus**: 1v1 up to 4v4 matches. One player hosts and gets a 4-letter
+  code, others join with it. Browser and desktop players can play together.
+
+Each server keeps its own accounts and records in its own data folder, so two
+websites running OpenSnake have completely separate logins and leaderboards.
 
 | File | What it does |
 | --- | --- |
-| `build.sh` | Builds the browser version into `build/` (and can start the server) |
-| `serve.py` | Serves the built game on your local network |
+| `build.sh` | Builds the browser game into `build/`; with `--serve` it then starts the OpenSnake server |
 | `main.py` | The browser entry point that starts the game |
-| `build/` | Build output. Created by `build.sh`, ignored by git, safe to delete |
+| `serve.py` | A plain file server for the release download (no accounts, records or versus) |
+| `build/` | Build output. Ignored by git, safe to delete |
+| `data/` | The server's accounts and records (`opensnake.db`). Ignored by git; back it up |
 
-## Using the release download
+The server itself is `opensnake/server.py` in the game package.
 
-Each release includes `OpenSnake-<version>-web.zip`, the browser version
-already built. Unzip it and start the server from inside the folder (needs
-Python 3, nothing else):
+## Running the website
 
-```sh
-cd OpenSnake-<version>-web
-python3 serve.py
-```
+Do this on the computer that hosts the website, from a clone of the
+repository.
 
-Then open the address it prints. You can also upload the folder's contents
-(everything except `serve.py`) to any static web host.
-
-The rest of this guide is for building it yourself from the source code.
-
-## First-time setup
-
-Run these from the project folder (the one containing `web-support/`). You only
-need to do this once. If you already have the `.venv` folder from the desktop
-setup, skip the first line.
+### First-time setup
 
 ```sh
+git clone https://github.com/CharlieKulak/opensnake.git
+cd opensnake
 python3 -m venv .venv
-.venv/bin/pip install -e . pygbag
+.venv/bin/pip install -e ".[server]" pygbag
 ```
 
-## Start the server
-
-Build the game and start the server in one step:
+### Build and start
 
 ```sh
 PYTHON=.venv/bin/python web-support/build.sh --serve
 ```
 
-When it's ready it prints the addresses to open:
+This builds the browser game and starts the server on port 8000:
 
 ```
-OpenSnake is being served from .../web-support/build/opensnake/build/web
-  On this computer:      http://localhost:8000/
-  On your local network: http://192.168.1.248:8000/
-Press Ctrl+C to stop.
+OpenSnake server 0.3.1
+  data:     .../web-support/data
+  web game: .../web-support/build/opensnake/build/web
+  http://localhost:8000/   (Ctrl+C to stop)
 ```
 
-Open the local network address on any phone, tablet or computer connected to
-the same Wi-Fi or network. Click the page once to start: browsers don't allow
-game sound until you interact with the page.
+Anything after `--serve` is passed to the server, for example
+`web-support/build.sh --serve --port 9000`.
 
-**To stop the server**, press **Ctrl+C** in the terminal where it's running.
-
-### Start it again later
-
-If you haven't changed the game since the last build, you can skip building and
-just start the server:
+To start the server again without rebuilding:
 
 ```sh
-.venv/bin/python web-support/serve.py
+.venv/bin/python -m opensnake.server
 ```
 
-After changing the game's code, run `build.sh --serve` again so the browser gets
-the new version.
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--port` | `8000` | Port to listen on |
+| `--host` | `0.0.0.0` | Address to listen on (`127.0.0.1` = only this computer, e.g. behind a proxy) |
+| `--web` | `web-support/build/opensnake/build/web` | The built browser game |
+| `--data` | `web-support/data` | Where accounts and records are stored |
 
-### Options
+**To stop it**, press Ctrl+C.
 
-| Want to... | Run |
-| --- | --- |
-| Use a different port (e.g. 9000) | `.venv/bin/python web-support/serve.py --port 9000` |
-| Only build, without serving | `PYTHON=.venv/bin/python web-support/build.sh` |
-| Serve a build from somewhere else | `.venv/bin/python web-support/serve.py path/to/build/web` |
+### Updating
 
-## Playing in the browser
+```sh
+git pull
+.venv/bin/pip install -e ".[server]"
+PYTHON=.venv/bin/python web-support/build.sh --serve
+```
 
-- **Display** in the menu chooses the canvas resolution: 16:9 sizes from
-  1024 x 576 to 3840 x 2160, or **Fullscreen**, which fills your monitor at its
-  own resolution. **F11** switches fullscreen on and off. The page scales the
-  game to fit the browser window.
-- There is no Quit button; close the tab instead.
+Accounts and records in `web-support/data/` are kept across updates.
 
-## Things to know
+### HTTPS (a real domain)
 
-- **Internet is needed** the first time a browser loads the page: it downloads
-  pygbag's Python runtime from `pygame-web.github.io`. The game files
-  themselves come from your computer.
-- **Settings and best scores may reset** when the page is reloaded.
-- **Only your local network can reach it.** Other devices must be on the same
-  network as the computer running the server. If they can't connect, check that
-  your firewall allows incoming connections on the port (8000 by default).
-- **The server stops** when you press Ctrl+C or close the terminal.
-- `serve.py` is meant for home use while developing and testing. To put the
-  game on a public website, upload the contents of
-  `build/opensnake/build/web/` to any static web host, such as GitHub Pages.
+Browsers on an `https://` page can only talk to an `https://`/`wss://`
+server. Run the OpenSnake server on a local port and put your usual HTTPS
+proxy in front of it. The proxy must pass **WebSocket** connections through
+on `/ws`, or versus won't connect.
+
+**Caddy** (handles WebSockets automatically):
+
+```
+snake.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+**nginx**:
+
+```nginx
+server {
+    server_name snake.example.com;
+    # ... your existing ssl_certificate lines ...
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+    }
+    location /ws {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;
+    }
+}
+```
+
+Behind a proxy, start the server with `--host 127.0.0.1` so it's only
+reachable through the proxy.
+
+### Accounts and records data
+
+Everything is in one SQLite file, `web-support/data/opensnake.db`:
+
+- accounts (usernames and salted, hashed passwords), login sessions
+- every verified speedrun run, used for the leaderboards and world records
+
+Back up that file to keep your players' accounts and records. Delete it (with
+the server stopped) to start fresh.
+
+## Playing on the website
+
+- Click the page once to start (browsers need a click before game sound).
+- **Online** in the menu (or **O**) shows this site's server, your account,
+  and versus. You stay logged in on that browser until you log out.
+- While you're in a match, the browser tab's title shows the match code.
+- **Display** picks the canvas resolution (16:9 sizes) or **Fullscreen**
+  (also **F11**).
+- There's no Quit button; close the tab instead.
+
+## The release download
+
+Each release includes `OpenSnake-<version>-web.zip`: the browser game,
+already built, plus `serve.py`. That plays fine for single-player, but it's
+static files only, so there are no accounts, site records or versus. Unzip it
+and run `python3 serve.py` inside the folder. For the online features, run
+the full server from the repository as described above.
 
 ## Troubleshooting
 
 | Problem | Fix |
 | --- | --- |
-| `No index.html in ...` | Build first: `PYTHON=.venv/bin/python web-support/build.sh` |
-| `Address already in use` | Another server is using the port. Stop it, or use `--port 9000` |
-| Grey page that never starts | Click the page. If it still doesn't start, add `?-i` to the address (e.g. `http://localhost:8000/?-i`) to show pygbag's console with any error messages |
-| `No module named pygbag` | Run the first-time setup above |
+| `No module named aiohttp` | Run the first-time setup: `.venv/bin/pip install -e ".[server]"` |
+| `No module named pygbag` | `.venv/bin/pip install pygbag` |
+| `Address already in use` | Another server uses the port. Stop it, or use `--port 9000` |
+| Online screen says the website doesn't run the OpenSnake server | The site is being served by something else (e.g. `serve.py` or a static host). Start `opensnake.server` |
+| Versus can't connect, but logging in works | Your HTTPS proxy isn't passing WebSockets on `/ws`. See the nginx example above |
+| Grey page that never starts | Click the page. If it still doesn't start, add `?-i` to the address to show pygbag's console |
+| The game needs internet the first time | It downloads pygbag's Python runtime from `pygame-web.github.io` |

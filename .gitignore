@@ -4,3 +4,5 @@ __pycache__/
 build/
 dist/
 assets/
+# OpenSnake server data (accounts, login tokens, records): never commit
+web-support/data/

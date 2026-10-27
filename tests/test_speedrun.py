@@ -187,3 +187,18 @@ class CustomCategoryTests(unittest.TestCase):
             cache.write_text(json.dumps({"updated": "2999-01-01",
                                          "records": {cid: {"time_ms": 4000, "player": "x"}}}))
             self.assertEqual(Records(cache).get(cid)["time_ms"], 4000)
+
+
+class SiteRecordsTests(unittest.TestCase):
+    def test_site_records_replace_and_restore(self):
+        r = Records(None)
+        offline = dict(r.records)
+        r.set_server({"sprint10": {"time_ms": 5000, "player": "site-hero"}, "junk": "x"}, "snake.example.com")
+        self.assertEqual(r.get("sprint10")["player"], "site-hero")
+        self.assertIsNone(r.get("junk"))
+        self.assertEqual(r.source, "site:snake.example.com")
+        r.set_server({}, "other.example.com")  # switching sites keeps the original to restore
+        self.assertIsNone(r.get("sprint10"))
+        r.clear_server()
+        self.assertEqual(r.records, offline)
+        self.assertNotEqual(r.source.split(":")[0], "site")

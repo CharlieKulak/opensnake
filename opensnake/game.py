@@ -42,6 +42,10 @@ class Snake:
     hole_counter: int = 0
     no_interp: bool = False
     moved: bool = False
+    team: int = 0            # versus: which team (0 or 1)
+    score: int = 0           # versus: fruit this snake has eaten
+    name: str = ""           # versus: player name shown above the head
+    colors: tuple | None = None  # (head, tail) colour override
 
     @property
     def head(self) -> Seg:
@@ -89,13 +93,20 @@ class Event:
     x: int = 0
     y: int = 0
     fruit: str = ""
+    snake: int = -1  # index of the snake it happened to, where that matters
 
 
 class Game:
     def __init__(self, w: int, h: int, modes=(), apple_count: int = 1, fruit: str = "apple",
-                 rng: random.Random | None = None):
+                 rng: random.Random | None = None, teams: list[int] | None = None, goal: int = 0):
+        """``teams`` turns on versus: one snake per entry, the entry being its team (0 or 1).
+        ``goal`` (versus only): first team to eat this many fruit wins; 0 = last team alive."""
         self.w, self.h = w, h
+        self.teams = list(teams) if teams else None
+        self.goal = goal
         self.modes = set(modes)
+        if self.teams:
+            self.modes.discard("yinyang")  # the second snake slot is a real player in versus
         self.apple_count = apple_count
         self.fruit = fruit
         self.rng = rng or random.Random()
@@ -118,6 +129,7 @@ class Game:
         self.won = False
         self.started = False
         self.events: list[Event] = []
+        self.winner: int | None = None  # versus: winning team, None = draw / not over
         self.next_group = 1
         self.dim = 0
 
@@ -131,12 +143,15 @@ class Game:
         self.gates: list[Gate] = []
 
         row = max(1, mid_y - 2) if yin else mid_y
-        self.snakes = [self._make_snake(start_x, row, "right")]
-        if yin:
-            self.snakes.append(self._make_snake(w - 1 - start_x, h - 1 - row, "left"))
+        if self.teams:
+            self.snakes = self._spawn_teams()
+        else:
+            self.snakes = [self._make_snake(start_x, row, "right")]
+            if yin:
+                self.snakes.append(self._make_snake(w - 1 - start_x, h - 1 - row, "left"))
         self.prev = self.snapshot()
 
-        if not yin and not self.has("sokoban") and not self.has("portal"):
+        if not self.teams and not yin and not self.has("sokoban") and not self.has("portal"):
             # First fruit straight ahead, but not miles away on huge boards.
             self._maybe_lock(self._add_apple(min(w - 1 - start_x, start_x + 8), mid_y))
         self.fill_apples()
@@ -153,6 +168,24 @@ class Game:
         for h in self.hooks:
             h.call("on_reset", self)
 
+    @property
+    def versus(self) -> bool:
+        return bool(self.teams)
+
+    def _spawn_teams(self) -> list[Snake]:
+        """Team 0 lines up on the left facing right, team 1 on the right facing left."""
+        snakes = [None] * len(self.teams)
+        x = min(max(3, self.w // 6), self.w // 2 - 2)
+        for team, (col, d) in enumerate(((x, "right"), (self.w - 1 - x, "left"))):
+            members = [i for i, t in enumerate(self.teams) if t == team]
+            for j, i in enumerate(members):
+                y = round((j + 1) * self.h / (len(members) + 1))
+                y = min(self.h - 1, max(0, y if team == 0 else self.h - 1 - y))
+                sn = self._make_snake(col, y, d)
+                sn.team = team
+                snakes[i] = sn
+        return snakes
+
     def _make_snake(self, x: int, y: int, d: str) -> Snake:
         dx, dy = DIRS[d]
         return Snake(body=[Seg(x - dx * i, y - dy * i) for i in range(4)], dir=d)
@@ -161,6 +194,17 @@ class Game:
         return [[(p.x, p.y) for p in s.body] for s in self.snakes]
 
     # ---- input -------------------------------------------------------------
+
+    def input_for(self, index: int, d: str) -> None:
+        """Queue a turn for one snake (versus: each player steers their own)."""
+        if self.over or not (0 <= index < len(self.snakes)) or d not in DIRS:
+            return
+        s = self.snakes[index]
+        if s.dead:
+            return
+        last = s.queue[-1] if s.queue else (s.planned or s.dir)
+        if d not in (last, OPPOSITE[last]) and len(s.queue) < 3:
+            s.queue.append(d)
 
     def input(self, d: str) -> None:
         if self.over:
@@ -212,6 +256,8 @@ class Game:
             return "mine"
         cheese = self.has("cheese")
         for s in self.snakes:
+            if s.dead and self.versus:
+                continue  # knocked-out snakes are off the board
             # A tail that will move away this tick does not block.
             end = len(s.body) - 1 if (not s.moved and s.grow == 0) else len(s.body)
             for i in range(end):
@@ -400,13 +446,26 @@ class Game:
             s.moved = False
             s.no_interp = False
 
+        targets = {}
+        if self.versus:
+            # Everyone picks a direction first, so two snakes heading for the same
+            # cell are treated alike, whichever of them happens to move first.
+            for i, s in enumerate(self.snakes):
+                if not s.dead:
+                    self._turn(s)
+                    targets[i] = self._next_cell(s)
         for s in self.snakes:
-            if s.planned:
-                s.dir, s.planned = s.planned, None
-            elif s.queue:
-                s.dir = s.queue.pop(0)
+            if s.dead and self.versus:
+                continue
+            if not self.versus:
+                self._turn(s)
             self._move_snake(s)
             s.moved = True
+            if self.over:
+                return
+        if self.versus:
+            self._head_on(targets)
+            self._check_versus_end()
             if self.over:
                 return
 
@@ -420,6 +479,17 @@ class Game:
             self.spawn_shield()
         for h in self.hooks:
             h.call("on_step", self)
+
+    def _turn(self, s: Snake) -> None:
+        if s.planned:
+            s.dir, s.planned = s.planned, None
+        elif s.queue:
+            s.dir = s.queue.pop(0)
+
+    def _next_cell(self, s: Snake) -> tuple[int, int]:
+        dx, dy = DIRS[s.dir]
+        x, y = s.head.x + dx, s.head.y + dy
+        return self._wrap(x, y) if self.has("borderless") else (x, y)
 
     def _wrap(self, x, y):
         return x % self.w, y % self.h
@@ -497,8 +567,41 @@ class Game:
             self.events.append(Event("bump"))
             return
         s.dead = True
+        if self.versus:  # only this snake is out; the match goes on
+            self.events.append(Event("die", s.head.x, s.head.y, what, self.snakes.index(s)))
+            return
         self.over = True
         self.events.append(Event("die", fruit=what))
+
+    # ---- versus --------------------------------------------------------------
+
+    def _head_on(self, targets: dict[int, tuple[int, int]]) -> None:
+        """Snakes that went for the same cell this tick are all out, together."""
+        cells: dict[tuple[int, int], list[int]] = {}
+        for i, cell in targets.items():
+            cells.setdefault(cell, []).append(i)
+        for group in cells.values():
+            if len(group) > 1:
+                for i in group:
+                    sn = self.snakes[i]
+                    if not sn.dead:
+                        sn.dead = True
+                        self.events.append(Event("die", sn.head.x, sn.head.y, "head-on", i))
+
+    def team_score(self, team: int) -> int:
+        return sum(sn.score for sn in self.snakes if sn.team == team)
+
+    def _check_versus_end(self) -> None:
+        alive = {sn.team for sn in self.snakes if not sn.dead}
+        reached = [t for t in (0, 1) if self.goal and self.team_score(t) >= self.goal]
+        if reached:
+            self.winner = reached[0] if len(reached) == 1 else None
+        elif len(alive) <= 1:
+            self.winner = next(iter(alive)) if alive else None
+        else:
+            return
+        self.over = True
+        self.events.append(Event("win" if self.winner is not None else "draw"))
 
     def _eat(self, s: Snake, apple: Apple) -> None:
         self.apples.remove(apple)
@@ -524,7 +627,9 @@ class Game:
 
     def _scored(self, s: Snake) -> None:
         self.score += 1
-        for t in self.snakes:
+        s.score += 1
+        # Only the eater grows, except in Yin Yang where both snakes share everything.
+        for t in (self.snakes if self.has("yinyang") else [s]):
             t.grow += 1
 
         if self.has("statue") and len(s.body) > 3:
@@ -612,6 +717,12 @@ class Game:
     def win(self) -> None:
         if self.over:
             return
+        if self.versus:  # board full: the team with more fruit wins
+            a, b = self.team_score(0), self.team_score(1)
+            self.winner = None if a == b else (0 if a > b else 1)
+            self.over = True
+            self.events.append(Event("win" if self.winner is not None else "draw"))
+            return
         self.won = True
         self.over = True
         self.events.append(Event("win"))
@@ -620,3 +731,45 @@ class Game:
         """Mines in the 8 cells around (x, y), for minesweeper hints."""
         return sum((x + dx, y + dy) in self.mines
                    for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dx or dy)
+
+
+# ---- network state --------------------------------------------------------------
+# The multiplayer server runs the real game and sends this state every tick;
+# clients load it into their own Game object, which the normal renderer draws.
+
+def game_to_state(g: Game) -> dict:
+    return {
+        "w": g.w, "h": g.h, "tick": g.tick, "over": g.over, "winner": g.winner, "started": g.started,
+        "goal": g.goal, "modes": sorted(g.modes), "dim": g.dim,
+        "snakes": [{"b": [[p.x, p.y, int(p.hole)] for p in s.body], "d": s.dir, "dead": s.dead,
+                    "team": s.team, "score": s.score, "shield": s.shield, "name": s.name,
+                    "ni": s.no_interp} for s in g.snakes],
+        "apples": [[a.x, a.y, a.fruit, a.group, int(a.poison), int(a.locked)] for a in g.apples],
+        "walls": [[w.x, w.y, w.kind, w.dim] for w in g.walls.values()],
+        "items": [[it.x, it.y, it.type, it.group] for it in g.items],
+        "events": [[e.type, e.x, e.y, e.fruit, e.snake] for e in g.events],
+    }
+
+
+def apply_state(g: Game, st: dict) -> None:
+    """Load a server state into a client-side Game (the previous state becomes prev)."""
+    g.prev = g.snapshot()
+    g.w, g.h = st["w"], st["h"]
+    g.tick, g.over, g.winner, g.started = st["tick"], st["over"], st["winner"], st["started"]
+    g.goal, g.dim = st.get("goal", 0), st.get("dim", 0)
+    g.modes = set(st.get("modes", []))
+    snakes = []
+    for i, d in enumerate(st["snakes"]):
+        old = g.snakes[i] if i < len(g.snakes) else None
+        sn = Snake(body=[Seg(x, y, bool(h)) for x, y, h in d["b"]], dir=d["d"], dead=d["dead"],
+                   team=d["team"], score=d["score"], shield=d["shield"], name=d.get("name", ""),
+                   no_interp=d.get("ni", False), colors=old.colors if old else None)
+        snakes.append(sn)
+    if len(snakes) != len(g.snakes):
+        g.prev = [[(p.x, p.y) for p in sn.body] for sn in snakes]
+    g.snakes = snakes
+    g.teams = [sn.team for sn in snakes]
+    g.apples = [Apple(x, y, fruit, group, bool(poison), bool(locked)) for x, y, fruit, group, poison, locked in st["apples"]]
+    g.walls = {(x, y): Wall(x, y, kind, dim) for x, y, kind, dim in st["walls"]}
+    g.items = [Item(x, y, t, group) for x, y, t, group in st["items"]]
+    g.events.extend(Event(t, x, y, fruit, sn) for t, x, y, fruit, sn in st.get("events", []))

@@ -26,6 +26,7 @@ from .assets import AssetPack, config_dir, load_image
 from .mods import LOADED as MOD_RESULTS
 from .mods import default_dirs as mod_dirs
 from .mods import describe_mod, iter_mods, load_mods
+from .online import Online
 from .render import FRUIT_COLORS, Renderer, View, head_position, mode_icon
 
 KEYMAP = {
@@ -85,6 +86,8 @@ DEFAULTS = {
     "speedrun_mode": False,  # menu checkbox: time a run of your own settings
     "packs": None,           # enabled resource packs, highest priority first (None = never set)
     "mods_disabled": [],     # mod names not to load
+    "server_url": "",        # desktop: OpenSnake website to play online with
+    "accounts": {},          # desktop: saved logins per server {url: {user, token}}
     "sr_goal": 10,           # its goal: fruit to eat (0 = fill the board)
     "player_name": "",       # put in saved speedrun files
     "online_records": True,  # fetch the latest world records from GitHub
@@ -164,6 +167,9 @@ class Store:
             s["packs"] = ["legacy:assets"] if (config_dir() / "assets").is_dir() else []
         s["packs"] = [str(x) for x in s["packs"]][:50]
         s["mods_disabled"] = [str(x) for x in s.get("mods_disabled") or []][:200]
+        s["server_url"] = str(s.get("server_url") or "")[:200]
+        if not isinstance(s.get("accounts"), dict):
+            s["accounts"] = {}
         for key, (_label, lo, hi) in NUMBERS.items():
             try:
                 s[key] = min(hi, max(lo, int(s[key])))
@@ -281,6 +287,7 @@ class App:
         self.records = Records(config_dir() / "records-cache.json")
         if not WEB and self.store.settings["online_records"]:
             self.records.refresh_in_background()
+        self.online = Online(self)  # site connection, accounts, versus
         self.running = True
         self.new_game()
         self.focus_play()
@@ -414,6 +421,8 @@ class App:
         self.new_game()
 
     def tick_ms(self) -> float:
+        if self.state == "versus":
+            return self.online.tick_ms
         return self.attempt.tick_ms if self.attempt else speed_ms(self.settings["speed"])
 
     def _reset_play(self):
@@ -462,6 +471,10 @@ class App:
                     "date": run.to_json()["date"], "file": result["file"]}
                 self.store.save()
         self.run_result = result
+        if run.finished and self.online.logged_in:
+            def report(text, color, res=result):
+                res["online"] = (text, color)
+            self.online.submit_run(run.to_json(self.online.user, __version__), report)
 
     def record_score(self):
         if self.recorded:
@@ -499,7 +512,7 @@ class App:
     def camera(self, rect, t):
         """Top-left board cell of the viewport, centred on the snake's head."""
         g, c = self.game, self.renderer.c
-        hx, hy = head_position(g, t)
+        hx, hy = head_position(g, t, self.online.you if self.state == "versus" else 0)
         span_x, span_y = rect.w / c, rect.h / c
         cam_x = 0.0 if g.w <= span_x else min(g.w - span_x, max(0.0, hx - span_x / 2))
         cam_y = 0.0 if g.h <= span_y else min(g.h - span_y, max(0.0, hy - span_y / 2))
@@ -523,6 +536,10 @@ class App:
                 self.speedrun_key(ev)
             elif self.state == "addons":
                 self.addons_key(ev)
+            elif self.state in ("online", "lobby"):
+                self.online.key(ev)
+            elif self.state == "versus":
+                self.online.versus_key(ev)
             else:
                 self.play_key(ev)
         elif ev.type == pygame.MOUSEMOTION:
@@ -585,6 +602,9 @@ class App:
         return None
 
     def click(self, pos):
+        if self.state in ("online", "lobby"):
+            self.online.click(pos)
+            return
         if self.state == "addons":
             for rect, action in self.ad_hits:
                 if rect.collidepoint(pos):
@@ -692,6 +712,8 @@ class App:
             self.activate({"kind": "btn", "id": "blender"})
         elif ev.key == pygame.K_m:
             self.open_addons()
+        elif ev.key == pygame.K_o:
+            self.open_online()
         elif ev.key == pygame.K_t:  # (S is taken: WASD "down")
             self.open_speedrun()
 
@@ -779,6 +801,8 @@ class App:
             self.open_speedrun()
         elif w.get("id") == "addons":
             self.open_addons()
+        elif w.get("id") == "online":
+            self.open_online()
         elif w.get("id") == "quit":
             self.running = False
 
@@ -822,7 +846,8 @@ class App:
         bh = max(36, int(ph * 0.065))
         hint_h = int(ph * 0.024) + 16  # shortcut hint along the panel's bottom edge
         by = min(y + slider_h + 10, panel.bottom - hint_h - bh)
-        buttons = [("blender", "Blender"), ("speedrun", "Speedrun"), ("addons", "Packs & Mods"), ("play", "Play")] + \
+        buttons = [("blender", "Blender"), ("speedrun", "Speedrun"), ("online", "Online"),
+                   ("addons", "Packs & Mods"), ("play", "Play")] + \
             ([] if WEB else [("quit", "Quit")])
         bw = min(round(190 * grow), (pw - 40) // len(buttons) - 16)
         for i, (bid, _label) in enumerate(buttons):
@@ -900,7 +925,7 @@ class App:
                 primary = w["id"] == "play"
                 bg = ACCENT if primary else (242, 244, 239)
                 pygame.draw.rect(scr, bg, r, border_radius=r.h // 2)
-                text = {"blender": "Blender", "speedrun": "Speedrun", "addons": "Packs & Mods",
+                text = {"blender": "Blender", "speedrun": "Speedrun", "addons": "Packs & Mods", "online": "Online",
                         "play": "Play", "quit": "Quit"}[w["id"]]
                 t = R.font(int(r.h * 0.55)).render(text, True, WHITE if primary else INK)
                 if t.get_width() > r.w - 16:  # long label on a narrow button
@@ -914,6 +939,8 @@ class App:
             desc = MODE_DESCS[focused["id"]]
         elif focused.get("id") == "blender":
             desc = "Mix 2-4 random modes together."
+        elif focused.get("id") == "online":
+            desc = "Accounts, this site's leaderboards and versus matches (1v1 up to 4v4) with a code."
         elif focused.get("id") == "addons":
             desc = "Turn resource packs and mods on and off, like Minecraft resource packs."
         elif focused.get("id") == "speedrun":
@@ -942,7 +969,7 @@ class App:
         if mods_bad:
             mods_txt += f", {mods_bad} failed (see terminal)"
         hint = R.font(int(ph * 0.024), False).render(
-            "Arrows: move   Enter: select   B: blender   T: speedrun   M: packs & mods   F11: fullscreen" + mods_txt, True, MUTED)
+            "Arrows: move   Enter: select   B: blender   T: speedrun   O: online   M: packs & mods   F11: fullscreen" + mods_txt, True, MUTED)
         scr.blit(hint, hint.get_rect(midbottom=(p.centerx, p.bottom - 10)))
 
     def draw_check(self, w, r):
@@ -1025,6 +1052,12 @@ class App:
         self.sfx = Sfx(self.pack)
         self.sfx.muted = self.settings["muted"]
         self.icon_cache.clear()
+
+    def open_online(self):
+        self.state = "online"
+        self.online.focus = None
+        if self.online.server_state in ("ok", "no-server", "error") and self.online.server:
+            self.online.fetch_records()
 
     def open_addons(self):
         self.ad_packs = discover_packs()  # pick up packs dropped in since last time
@@ -1473,6 +1506,8 @@ class App:
                 if wr:
                     compare.append(f"WR {format_time(wr['time_ms'])} ({format_delta(t - wr['time_ms'])})")
                 lines.append(("   ".join(compare) or "First finish: that's your PB", 0.55, MUTED))
+                if res.get("online"):
+                    lines.append((res["online"][0], 0.5, res["online"][1]))
                 if wr and round(t) < wr["time_ms"]:
                     lines.append(("Faster than the world record! Submit your run file.", 0.5, GOOD))
                 elif not wr:
@@ -1494,7 +1529,15 @@ class App:
     # ---- play --------------------------------------------------------------------
 
     def update(self, dt):
+        self.online.poll()
+        if self.state == "versus":  # the server runs the match; just animate towards its next state
+            self.acc = min(self.acc + dt, self.tick_ms())
+            self.drain()
+            return
         g = self.game
+        if g is None:
+            self.new_game()
+            g = self.game
         if self.state != "play" or self.paused or not g.started or g.over:
             self.drain()
             return
@@ -1521,6 +1564,11 @@ class App:
                 R.burst(ev.x, ev.y, (125, 47, 191), 18)
             elif ev.type == "shield":
                 R.burst(ev.x, ev.y, (47, 128, 237), 20)
+            elif self.state == "versus":
+                if ev.type == "die":  # someone was knocked out
+                    R.burst(ev.x, ev.y, (90, 90, 90), 22)
+                    if ev.snake == self.online.you:
+                        R.shake = R.c * 0.4
             elif ev.type in ("die", "win"):
                 R.shake = R.c * 0.4 if ev.type == "die" else 0
                 self.over_at = pygame.time.get_ticks()
@@ -1539,6 +1587,9 @@ class App:
         R = self.renderer
         hh = self.header_h()
         scr.fill(render.HEADER, (0, 0, scr.get_width(), hh))
+        if self.state == "versus" and self.online.game:
+            self.online.draw_header(hh)
+            return
         if self.attempt:
             self.draw_run_header(hh)
             return
@@ -1573,7 +1624,7 @@ class App:
         R = self.renderer
         scr = self.screen
         self.buttons = []
-        if self.state != "play":
+        if self.state not in ("play", "versus"):
             return
 
         def card(lines, buttons=()):
@@ -1602,6 +1653,9 @@ class App:
                     scr.blit(img, img.get_rect(center=r.center))
                     self.buttons.append({"rect": r, "action": action})
 
+        if self.state == "versus":
+            self.online.draw_overlay(rect, card)
+            return
         if self.attempt:
             self.run_overlay(card)
             return
@@ -1637,7 +1691,9 @@ class App:
         blink = g.over and not g.won and since is not None and since < 900 and (since // 150) % 2 == 1
         cam_x, cam_y = self.camera(rect, t)
         view = View(R.c, cam_x, cam_y, rect.w, rect.h, g.w, g.h, now)
-        board = R.draw_board(g, t, now, palette, view, hide_snake=blink)
+        board = R.draw_board(g, t, now, palette, view, hide_snake=blink and self.state != "versus")
+        if self.state == "versus":
+            self.online.draw_labels(board, view)
         ox = oy = 0
         if R.shake > 0:
             ox, oy = random.uniform(-R.shake, R.shake), random.uniform(-R.shake, R.shake)
@@ -1653,6 +1709,10 @@ class App:
             self.draw_speedrun()
         elif self.state == "addons":
             self.draw_addons()
+        elif self.state == "online":
+            self.online.draw_online()
+        elif self.state == "lobby":
+            self.online.draw_lobby()
 
     def frame(self):
         dt = self.clock.tick(60 if WEB else 120)

@@ -666,10 +666,12 @@ class View:
         return self.x0 <= x < self.x1 and self.y0 <= y < self.y1
 
 
-def head_position(game, t):
-    """Interpolated centre of the first snake's head, in cells (for the camera)."""
-    s = game.snakes[0]
-    path, s_head, _ = build_snake_path(game, s, game.prev[0] if game.prev else None, t)
+def head_position(game, t, index: int = 0):
+    """Interpolated centre of a snake's head (the first by default), in cells (for the camera)."""
+    index = index if 0 <= index < len(game.snakes) else 0
+    s = game.snakes[index]
+    prev = game.prev[index] if index < len(game.prev) else None
+    path, s_head, _ = build_snake_path(game, s, prev, t)
     x, y, _, _ = path.point(s_head)
     return x, y
 
@@ -787,14 +789,20 @@ class Renderer:
                 surf.blit(sp.get("lock", c, self.group_color(a.group)), v.px(a.x, a.y))
 
         heads = []
+        versus = bool(getattr(game, "teams", None))
         for i, s in enumerate(game.snakes):
+            if versus and s.dead:
+                continue  # knocked out of the match
             path, s_head, s_tail = build_snake_path(game, s, game.prev[i] if i < len(game.prev) else None, t)
             hx, hy, tx, ty = path.point(s_head)
             h = (hx * c + v.ox, hy * c + v.oy)
             heads.append(h)
             if hide_snake:
                 continue
-            if i == 1:
+            if s.colors:  # team colours in versus
+                draw_snake(surf, s, path, s_head, s_tail, c, s.colors[0], s.colors[1], game.has("cheese"),
+                           offset=(v.ox, v.oy))
+            elif i == 1:
                 draw_snake(surf, s, path, s_head, s_tail, c, (242, 242, 242), (184, 184, 184),
                            game.has("cheese"), (85, 85, 85), (v.ox, v.oy))
             else:

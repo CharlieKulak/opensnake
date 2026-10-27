@@ -19,6 +19,7 @@ or synthesized in code. See [CREDITS.md](CREDITS.md).
 - [Controls](#controls)
 - [The menu](#the-menu)
 - [Speedrun](#speedrun)
+- [Online play](#online-play)
 - [Modes](#modes)
 - [How movement works](#how-movement-works)
 - [Sounds](#sounds)
@@ -98,6 +99,9 @@ Command-line options:
 | Delete | | On the Speedrun screen: remove a custom category (press twice) |
 | B | | Random "Blender" mix of modes |
 | T | | Open the Speedrun screen |
+| O | | Open the Online screen (accounts, site records, versus) |
+| H | | On the Online screen: host a versus match |
+| Q | Leave a versus match | |
 | M | Mute / unmute | Open Packs & Mods |
 | F11 | Fullscreen on/off | Fullscreen on/off |
 
@@ -249,6 +253,47 @@ Maintainers then add it to `opensnake/records.json`:
 
 Bump `updated` whenever records change: the game keeps whichever copy is
 newest.
+
+## Online play
+
+Press **Online** in the menu (or **O**) to connect to an OpenSnake website's
+server. In the browser version that's automatically the site you're on. On
+the desktop, type the website's address (e.g. `https://snake.example.com`)
+and press Connect.
+
+**Accounts.** Create an account with a username and password, or log in. You
+stay logged in until you log out: in the browser, logins are remembered for
+that site; on the desktop, per server. Each website has its own accounts, so
+an account on one OpenSnake site doesn't exist on another.
+
+**Site world records.** While you're logged in, every speedrun you finish is
+sent to the site automatically. The server replays it to check the time
+(just like `--verify`), then puts it on that site's leaderboard. The finish
+screen tells you your rank, or that you set a new world record. The Speedrun
+screen's WR column then shows the site's records instead of the global
+`records.json`. Each website has its own leaderboards.
+
+**Versus (1v1 up to 4v4).** Press **Host a match** to create a match and get
+a 4-letter code; friends enter it under **join with a code**. Browser and
+desktop players can play in the same match. In the lobby:
+
+- Players are on the **Blue** or **Orange** team (up to 4 each); use
+  **Switch team** to change.
+- The host chooses the board size, speed, how much fruit, how to win (last
+  snake alive, or first team to 10/20/30 fruit) and which modes are on (Wall,
+  Borderless, Cheese, Poison, Portal, Shield, Magnet, Twin, Statue, Key,
+  Light).
+- The host presses **Start match**. After a 3-2-1 countdown everyone steers
+  their own snake.
+
+Crashing knocks only your snake out; you can keep watching. Two snakes moving
+into the same cell are both knocked out. You don't need an account to play
+versus: guests play under the name typed in the Username box, or a random
+guest name. The server runs the match itself, so every player sees the same
+game.
+
+To run your own OpenSnake website with accounts, records and versus, see
+[web-support/README.md](web-support/README.md).
 
 ## Graphics
 
@@ -571,6 +616,9 @@ the view:
 | `opensnake/game.py` | Game rules and simulation. No pygame, easy to test. |
 | `opensnake/modes.py` | Mode list, conflicts, speed curve, board limits, options. |
 | `opensnake/speedrun.py` | Speedrun categories, timer, replays, `--verify` and world records. |
+| `opensnake/server.py` | The OpenSnake server: website, accounts, site records and versus matches. |
+| `opensnake/net.py` | Talking to a server from the desktop game or the browser. |
+| `opensnake/online.py` | The Online screen, lobby and versus match screens. |
 | `opensnake/records.json` | Speedrun world records. |
 | `opensnake/render.py` | All drawing: board, fruit, snake path, objects, mode icons, the scrolling view. |
 | `opensnake/audio.py` | Sound loading and synthesis. |
