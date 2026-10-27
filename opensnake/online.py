@@ -92,6 +92,8 @@ class Online:
         # Turns we've sent but the server hasn't applied yet: [(direction, sent_at_ms)].
         # They're shown on our own snake straight away (client-side prediction).
         self.pending: list[tuple[str, int]] = []
+        self.ping_ms: float | None = None  # round trip to the server, shown in matches
+        self.last_ping = 0
         self.load_login()
         if self.server:
             self.check_server()
@@ -225,7 +227,14 @@ class Online:
 
     # ---- per-frame ------------------------------------------------------------------------
 
+    def _ping(self) -> None:
+        now = pygame.time.get_ticks()
+        if self.sock and self.sock.state == "open" and now - self.last_ping > 2000:
+            self.last_ping = now
+            self.sock.send({"t": "ping", "at": now})
+
     def poll(self) -> None:
+        self._ping()
         for req, then in list(self.requests):
             if req.poll():
                 self.requests.remove((req, then))
@@ -303,6 +312,9 @@ class Online:
             self._predict()
             app.acc = 0.0
             app.drain()
+        elif t == "pong" and isinstance(m.get("at"), (int, float)):
+            rtt = pygame.time.get_ticks() - m["at"]
+            self.ping_ms = rtt if self.ping_ms is None else 0.7 * self.ping_ms + 0.3 * rtt
         elif t == "over":
             self.result = m
             mine = self.game.snakes[self.you].team if self.game and 0 <= self.you < len(self.game.snakes) else -1
@@ -709,6 +721,8 @@ class Online:
         me = g.snakes[self.you] if 0 <= self.you < len(g.snakes) else None
         if me and me.dead and not g.over:
             mid = "You're out - watching   Q: leave"
+        if self.ping_ms is not None:
+            mid += f"     ping {self.ping_ms:.0f} ms   {app.clock.get_fps():.0f} fps"
         img = small.render(mid, True, (220, 236, 200))
         scr.blit(img, img.get_rect(center=(scr.get_width() // 2, hh // 2)))
 

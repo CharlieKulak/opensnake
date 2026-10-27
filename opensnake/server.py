@@ -431,6 +431,9 @@ class Server:
         t = m.get("t")
         room = p.room
         err = None
+        if t == "ping":  # lets players see their round-trip time
+            await p.ws.send_str(json.dumps({"t": "pong", "at": m.get("at")}))
+            return
         if t == "input" and room and room.game and room.state == "playing":
             if m.get("d") in DIRS and p.snake >= 0:
                 room.game.input_for(p.snake, m["d"])
