@@ -1,10 +1,12 @@
 # systemd service for the OpenSnake server (website, accounts, records, versus).
 #
-# Set up for a repository cloned to /root/opensnake with its .venv created as
-# described in web-support/README.md. If yours is elsewhere, change the paths
-# below (WorkingDirectory, ExecStart and ReadWritePaths).
+# Set up for a repository cloned to /opt/opensnake with its .venv created as
+# described in web-support/README.md, and an opensnake system user to run it.
+# If yours is elsewhere, change the paths below (WorkingDirectory,
+# ExecStartPre, ExecStart and ReadWritePaths).
 #
 # Install:
+#   useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin opensnake
 #   cp web-support/opensnake.service /etc/systemd/system/
 #   systemctl daemon-reload
 #   systemctl enable --now opensnake
@@ -22,13 +24,16 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=/root/opensnake
-# Create the data folder first ("+" runs this outside the sandbox below,
+User=opensnake
+Group=opensnake
+WorkingDirectory=/opt/opensnake
+# Create the data folder first ("+" runs this as root outside the sandbox below,
 # which needs the folder to exist and makes everything else read-only).
-ExecStartPre=+/usr/bin/mkdir -p /root/opensnake/web-support/data
+# The opensnake user owns only this folder; the code stays root's.
+ExecStartPre=+/usr/bin/install -d -o opensnake -g opensnake /opt/opensnake/web-support/data
 # Listens on every address. Use 127.0.0.1 instead for a proxy on this same
 # machine.
-ExecStart=/root/opensnake/.venv/bin/python -m opensnake.server --host 0.0.0.0 --port 8000
+ExecStart=/opt/opensnake/.venv/bin/python -m opensnake.server --host 0.0.0.0 --port 8000
 Restart=on-failure
 RestartSec=3
 # Show output in `journalctl -u opensnake` straight away.
@@ -37,7 +42,7 @@ Environment=PYTHONUNBUFFERED=1
 # Sandboxing: the server only needs to write its own data folder.
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/root/opensnake/web-support/data
+ReadWritePaths=/opt/opensnake/web-support/data
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
