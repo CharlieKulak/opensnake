@@ -95,9 +95,8 @@ systemctl enable --now opensnake
 | Restart it (after an update) | `systemctl restart opensnake` |
 | Stop it / stop starting at boot | `systemctl stop opensnake` / `systemctl disable opensnake` |
 
-The service listens on `192.168.1.187:8000` (edit `--host` in the file for a
-different address: `0.0.0.0` for every address, or `127.0.0.1` if your HTTPS
-proxy runs on the same machine) and can only write to `web-support/data/`. When it's running this way, don't also start it with
+The service listens on port 8000 on every address (edit `--host` in the file
+to `127.0.0.1` if your HTTPS proxy runs on the same machine) and can only write to `web-support/data/`. When it's running this way, don't also start it with
 `build.sh --serve`: the port would already be in use.
 
 ### Updating

@@ -26,9 +26,9 @@ WorkingDirectory=/root/opensnake
 # Create the data folder first ("+" runs this outside the sandbox below,
 # which needs the folder to exist and makes everything else read-only).
 ExecStartPre=+/usr/bin/mkdir -p /root/opensnake/web-support/data
-# Listens on this machine's LAN address. Change it if the address changes, or
-# use 0.0.0.0 for every address, or 127.0.0.1 for a proxy on this same machine.
-ExecStart=/root/opensnake/.venv/bin/python -m opensnake.server --host 192.168.1.187 --port 8000
+# Listens on every address. Use 127.0.0.1 instead for a proxy on this same
+# machine.
+ExecStart=/root/opensnake/.venv/bin/python -m opensnake.server --host 0.0.0.0 --port 8000
 Restart=on-failure
 RestartSec=3
 # Show output in `journalctl -u opensnake` straight away.
