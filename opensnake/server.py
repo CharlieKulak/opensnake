@@ -337,6 +337,7 @@ class Server:
     def app(self) -> web.Application:
         app = web.Application(client_max_size=4 * 1024 * 1024)
         app.on_cleanup.append(self.shutdown)
+        app.on_response_prepare.append(self.revalidate)
         r = app.router
         r.add_get("/api/info", self.info)
         r.add_post("/api/register", self.register)
@@ -352,6 +353,13 @@ class Server:
             r.add_get("/", self.index)
             r.add_static("/", self.web_dir)
         return app
+
+    @staticmethod
+    async def revalidate(request: web.Request, response: web.StreamResponse) -> None:
+        """Make browsers check for a newer build every time (a cheap 304 if nothing changed).
+
+        Without this they can keep running an old opensnake.apk for hours after an update."""
+        response.headers.setdefault("Cache-Control", "no-cache")
 
     async def shutdown(self, app: web.Application) -> None:
         """Stop running matches and close the database (Windows can't delete open files)."""
@@ -549,6 +557,16 @@ class Server:
             await room.broadcast(room.info())
 
 
+def stale_build(web_dir: Path | None) -> bool:
+    """True if the game code has changed since the web game was built (e.g. pulled but not rebuilt)."""
+    apk = web_dir / "opensnake.apk" if web_dir else None
+    if not apk or not apk.is_file():
+        return False
+    code = Path(__file__).parent
+    newest = max(f.stat().st_mtime for f in code.rglob("*.py") if f.name != "server.py")
+    return newest > apk.stat().st_mtime
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(prog="opensnake.server", description="OpenSnake website + game server")
     parser.add_argument("--host", default="0.0.0.0", help="address to listen on (default: all)")
@@ -560,6 +578,9 @@ def main(argv=None) -> None:
     print(f"OpenSnake server {__version__}")
     print(f"  data:     {args.data}")
     print(f"  web game: {server.web_dir or 'not built (run web-support/build.sh); API only'}")
+    if stale_build(server.web_dir):
+        print("  WARNING: the game code is newer than the web game build, so the website still runs the "
+              "old version. Rebuild it: web-support/build.sh (or web-support/update.sh)")
     print(f"  http://localhost:{args.port}/   (Ctrl+C to stop)", flush=True)
     web.run_app(server.app(), host=args.host, port=args.port, print=None)
 

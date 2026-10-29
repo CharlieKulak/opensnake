@@ -54,6 +54,39 @@ class ShutdownTests(ServerTestCase):
         self.client = await self.make_client(Path(self.tmp.name) / "a")  # asyncTearDown closes this one
 
 
+class CacheTests(ServerTestCase):
+    async def test_browsers_revalidate_the_web_game(self):
+        web_dir = Path(self.tmp.name) / "web"
+        web_dir.mkdir()
+        (web_dir / "index.html").write_text("<html></html>")
+        (web_dir / "opensnake.apk").write_bytes(b"new build")
+        client = TestClient(TestServer(Server(Path(self.tmp.name) / "w", web_dir).app()))
+        await client.start_server()
+        try:
+            resp = await client.get("/opensnake.apk")
+            self.assertEqual(resp.headers["Cache-Control"], "no-cache")
+            resp = await client.get("/opensnake.apk", headers={"If-None-Match": resp.headers["ETag"]})
+            self.assertEqual(resp.status, 304)  # unchanged builds aren't downloaded again
+            self.assertEqual((await client.get("/"))
+                             .headers["Cache-Control"], "no-store")
+        finally:
+            await client.close()
+
+    def test_stale_build_is_noticed(self):
+        import os
+        from opensnake.server import stale_build
+        web_dir = Path(self.tmp.name) / "web"
+        web_dir.mkdir()
+        apk = web_dir / "opensnake.apk"
+        apk.write_bytes(b"build")
+        os.utime(apk, (0, 0))  # built long before the code
+        self.assertTrue(stale_build(web_dir))
+        now = 4_000_000_000
+        os.utime(apk, (now, now))  # built after it
+        self.assertFalse(stale_build(web_dir))
+        self.assertFalse(stale_build(None))
+
+
 class AccountTests(ServerTestCase):
     async def test_register_login_me_logout(self):
         token = await self.account()
