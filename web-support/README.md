@@ -76,12 +76,15 @@ To start the server again without rebuilding:
 
 `web-support/opensnake.service` keeps the server running in the background,
 restarts it if it crashes and starts it when the computer boots. It's set up
-for a repository at `/root/opensnake`; if yours is elsewhere, edit the paths
-in the file first.
+for a repository at `/opt/opensnake`; if yours is elsewhere, edit the paths
+in the file first. It runs the server as its own `opensnake` user, which can
+only write to `web-support/data/`; the code stays owned by root, so set it up
+and update it as root.
 
 ```sh
-cd /root/opensnake
+cd /opt/opensnake
 PYTHON=.venv/bin/python web-support/build.sh        # build the web game (needs internet)
+useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin opensnake
 cp web-support/opensnake.service /etc/systemd/system/
 systemd-analyze verify /etc/systemd/system/opensnake.service   # optional check
 systemctl daemon-reload
@@ -95,10 +98,17 @@ systemctl enable --now opensnake
 | Restart it (after an update) | `systemctl restart opensnake` |
 | Stop it / stop starting at boot | `systemctl stop opensnake` / `systemctl disable opensnake` |
 
-The service listens on `192.168.1.187:8000` (edit `--host` in the file for a
-different address: `0.0.0.0` for every address, or `127.0.0.1` if your HTTPS
-proxy runs on the same machine) and can only write to `web-support/data/`. When it's running this way, don't also start it with
-`build.sh --serve`: the port would already be in use.
+The service listens on port 8000 on every address (edit `--host` in the file
+to `127.0.0.1` if your HTTPS proxy runs on the same machine) and can only
+write to `web-support/data/`. When it's running this way, don't also start it
+with `build.sh --serve`: the port would already be in use. To run it by hand
+against the same data, stop the service and start it as the `opensnake` user,
+not root, or the database files can end up owned by root and the service won't
+be able to write them:
+
+```sh
+setpriv --reuid=opensnake --regid=opensnake --init-groups .venv/bin/python -m opensnake.server
+```
 
 ### Updating
 
