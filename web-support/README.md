@@ -9,7 +9,9 @@ server**, which serves the game and adds the online features:
   own leaderboards. Every run is replayed by the server to check the time
   before it counts.
 - **Versus**: 1v1 up to 4v4 matches. One player hosts and gets a 4-letter
-  code, others join with it. Browser and desktop players can play together.
+  code, others join with it. Hosts can name a match and make it public, so
+  anyone can find it under **Public matches** and search for it. Browser and
+  desktop players can play together.
 
 Each server keeps its own accounts and records in its own data folder, so two
 websites running OpenSnake have completely separate logins and leaderboards.

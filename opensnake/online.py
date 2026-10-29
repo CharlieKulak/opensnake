@@ -75,6 +75,8 @@ class Online:
             "username": Field("Username", max_len=20, allowed=ok_name),
             "password": Field("Password", masked=True, max_len=64),
             "code": Field("Code", max_len=4, upper=True, allowed="ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+            "search": Field("Search by match name, host or code", max_len=40),
+            "match_name": Field("Match name", max_len=32),
         }
         self.focus: str | None = None
         self.hits: list[tuple[pygame.Rect, object]] = []
@@ -94,6 +96,15 @@ class Online:
         self.pending: list[tuple[str, int]] = []
         self.ping_ms: float | None = None  # round trip to the server, shown in matches
         self.last_ping = 0
+        # public match search
+        self.matches: list[dict] = []
+        self.matches_total = 0
+        self.matches_state = "idle"  # idle / loading / ok / error
+        self.matches_note = ""
+        self.matches_query = None    # the search the shown list is for
+        self.matches_busy = False
+        self.matches_at = 0          # when the list was last asked for (ms)
+        self.match_scroll = 0
         self.load_login()
         if self.server:
             self.check_server()
@@ -236,6 +247,46 @@ class Online:
         report(f"Submitting to {self.site}...", MUTED)
         self.request("POST", "/api/runs", run_json, then=done)
 
+    # ---- public matches --------------------------------------------------------------------
+
+    def open_matches(self) -> None:
+        self.app.state = "matches"
+        self.focus = None
+        self.say("")
+        self.match_scroll = 0
+        self.fetch_matches()
+
+    def fetch_matches(self) -> None:
+        if self.server_state != "ok" or self.matches_busy:
+            return
+        query = self.fields["search"].value.strip()
+        self.matches_busy, self.matches_at = True, pygame.time.get_ticks()
+        if self.matches_state != "ok":
+            self.matches_state = "loading"
+
+        def done(r):
+            self.matches_busy = False
+            if r.ok and isinstance(r.data.get("matches"), list):
+                if query != self.matches_query:
+                    self.match_scroll = 0
+                self.matches, self.matches_total = r.data["matches"], int(r.data.get("total", 0))
+                self.matches_state, self.matches_query = "ok", query
+            elif r.status == 404:
+                self.matches_state = "error"
+                self.matches_note = "This server is too old for public matches. Join with a code instead."
+            else:
+                self.matches_state, self.matches_note = "error", r.message
+        self.request("GET", "/api/matches?" + urllib.parse.urlencode({"q": query}), then=done, auth=False)
+
+    def _poll_matches(self) -> None:
+        """Keep the list fresh while it's open, and follow the search box as it's typed in."""
+        if self.app.state != "matches" or self.matches_busy:
+            return
+        waited = pygame.time.get_ticks() - self.matches_at
+        typed = self.fields["search"].value.strip() != self.matches_query
+        if waited > 3000 or (typed and waited > 250):
+            self.fetch_matches()
+
     # ---- per-frame ------------------------------------------------------------------------
 
     def _ping(self) -> None:
@@ -246,6 +297,7 @@ class Online:
 
     def poll(self) -> None:
         self._ping()
+        self._poll_matches()
         for req, then in list(self.requests):
             if req.poll():
                 self.requests.remove((req, then))
@@ -299,6 +351,8 @@ class Online:
             if not self.room or self.room.get("code") != m["code"]:
                 set_page_title(f"OpenSnake - match {m['code']}")
             self.room = m
+            if self.focus != "match_name":  # don't fight the host while they type
+                self.fields["match_name"].value = m.get("name", "")
             if m["state"] == "lobby" and app.state != "lobby":
                 app.state = "lobby"
                 self.result = None
@@ -351,8 +405,8 @@ class Online:
         self.say("Creating a match...")
         self.send({"t": "host", "settings": {"size": "medium", "speed": 0.5, "apples": 3, "goal": 0, "modes": []}})
 
-    def join(self) -> None:
-        code = self.fields["code"].value.strip().upper()
+    def join(self, code: str | None = None) -> None:
+        code = (code or self.fields["code"].value).strip().upper()
         if self.mods_on:
             self.say(self.MODS_MESSAGE, BAD)
         elif self.server_state != "ok":
@@ -389,6 +443,12 @@ class Online:
             self.room["settings"] = {**self.room["settings"], key: value}
             self.send({"t": "settings", "settings": self.room["settings"]})
 
+    def set_details(self, **details) -> None:
+        """Rename the match or make it public/private (host only)."""
+        if self.is_host():
+            self.room.update(details)
+            self.send({"t": "details", **details})
+
     def toggle_mode(self, mode) -> None:
         modes = list(self.room["settings"]["modes"])
         modes.remove(mode) if mode in modes else modes.append(mode)
@@ -397,9 +457,14 @@ class Online:
     # ---- input ------------------------------------------------------------------------------
 
     def key(self, ev) -> None:
-        """Keys on the Online and Lobby screens."""
-        if self.focus and self.app.state == "online":
+        """Keys on the Online, Public matches and Lobby screens."""
+        state = self.app.state
+        if state == "matches" and not self.focus and ev.unicode and ev.unicode.isprintable() \
+                and ev.unicode != " ":
+            self.focus = "search"  # just start typing to search
+        if self.focus in self.visible_fields():
             f = self.fields[self.focus]
+            before = f.value
             if ev.key == pygame.K_BACKSPACE:
                 f.value = f.value[:-1]
             elif ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
@@ -412,16 +477,26 @@ class Online:
                 self.paste(f)
             elif ev.unicode:
                 f.type(ev.unicode)
+            if self.focus == "match_name" and f.value != before:
+                self.set_details(name=f.value)
             return
         if ev.key == pygame.K_ESCAPE:
-            if self.app.state == "lobby":
+            if state == "lobby":
                 self.leave()
+            elif state == "matches":
+                self.app.open_online()
             else:
                 self.app.open_menu()
-        elif ev.key == pygame.K_TAB and self.app.state == "online":
+        elif ev.key == pygame.K_TAB and self.visible_fields():
             self.next_field(1)
-        elif ev.key == pygame.K_h and self.app.state == "online":
+        elif ev.key == pygame.K_h and state == "online":
             self.host()
+        elif ev.key == pygame.K_b and state == "online":
+            self.open_matches()
+        elif ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and state == "matches" and self.matches:
+            self.join(self.matches[0]["code"])
+        elif ev.key in (pygame.K_UP, pygame.K_DOWN) and state == "matches":
+            self.scroll(1 if ev.key == pygame.K_DOWN else -1)
         elif ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and self.app.state == "lobby" and self.is_host():
             self.send({"t": "start"})
 
@@ -435,7 +510,14 @@ class Online:
         for ch in text.strip():
             f.type(ch)
 
+    def scroll(self, rows: int) -> None:
+        self.match_scroll = max(0, min(len(self.matches) - 1, self.match_scroll + rows))
+
     def visible_fields(self) -> list[str]:
+        if self.app.state == "matches":
+            return ["search"]
+        if self.app.state == "lobby":
+            return ["match_name"] if self.is_host() else []
         keys = [] if WEB else ["server"]
         if not self.logged_in:
             keys += ["username", "password"]
@@ -453,6 +535,11 @@ class Online:
             self.login(create=False)
         elif self.focus == "code":
             self.join()
+        elif self.focus == "search":
+            self.fetch_matches()
+            self.focus = None
+        elif self.focus == "match_name":
+            self.focus = None
 
     def _my_snake(self):
         g = self.game
@@ -614,6 +701,11 @@ class Online:
         self._text("or join with a code:", ph * 0.026, MUTED, midleft=(cx, y + row / 2))
         self._field("code", pygame.Rect(cx + int(w * 0.25), y, int(w * 0.17), row))
         self._button(pygame.Rect(x + int(w * 0.8), y, int(w * 0.2), row), "Join", self.join, False, ok)
+        y += row + 10
+        self._button(pygame.Rect(x, y, int(w * 0.3), row), "Public matches", self.open_matches, False,
+                     self.server_state == "ok")
+        self._text("Find open matches anyone can join, and search them by name.", ph * 0.022, MUTED,
+                   midleft=(x + int(w * 0.33), y + row / 2))
         y += row + 6
         name_hint = (f"You'll play as {self.user}." if self.logged_in else
                      "Not logged in: you'll play as a guest" +
@@ -629,7 +721,7 @@ class Online:
         bh = max(34, int(ph * 0.055))
         self._button(pygame.Rect(p.centerx - int(70 * grow), p.bottom - int(ph * 0.05) - bh, int(140 * grow), bh),
                      "Back", self.app.open_menu)
-        self._text("Tab: next box   Enter: confirm   H: host a match   Esc: back", ph * 0.022, MUTED,
+        self._text("Tab: next box   Enter: confirm   H: host   B: public matches   Esc: back", ph * 0.022, MUTED,
                    midbottom=(p.centerx, p.bottom - 8))
         self.focus = focus
 
@@ -642,10 +734,14 @@ class Online:
             return
         ph, pw = p.h, p.w
         host = self.is_host()
-        self._text("Match code", ph * 0.03, MUTED, midtop=(p.centerx, p.y + ph * 0.025))
-        self._text(room["code"], ph * 0.1, INK, midtop=(p.centerx, p.y + ph * 0.06))
-        self._text("Share this code so others can join from the Online screen.", ph * 0.024, MUTED,
-                   midtop=(p.centerx, p.y + ph * 0.165))
+        focus = self.focus  # clicks reset focus; keep it while drawing
+        if "public" in room:
+            self._lobby_details(p, room, host)
+        else:  # an older server: no names or public matches
+            self._text("Match code", ph * 0.03, MUTED, midtop=(p.centerx, p.y + ph * 0.025))
+            self._text(room["code"], ph * 0.1, INK, midtop=(p.centerx, p.y + ph * 0.06))
+            self._text("Share this code so others can join from the Online screen.", ph * 0.024, MUTED,
+                       midtop=(p.centerx, p.y + ph * 0.165))
 
         # teams
         top = p.y + int(ph * 0.22)
@@ -717,6 +813,113 @@ class Online:
         self._button(pygame.Rect(p.centerx + 8, by, bw, bh), "Leave", self.leave)
         hint = "Click a setting to change it   Enter: start   Esc: leave" if host else "Esc: leave"
         self._text(hint, ph * 0.022, MUTED, midbottom=(p.centerx, p.bottom - 8))
+        self.focus = focus
+
+    def _lobby_details(self, p, room, host) -> None:
+        """The lobby's top row: the code on the left, the match name and public/private on the right."""
+        ph = p.h
+        x, w = p.x + 40, p.w - 80
+        y = p.y + ph * 0.025
+        self._text("Match code", ph * 0.03, MUTED, topleft=(x, y))
+        self._text(room["code"], ph * 0.1, INK, topleft=(x, y + ph * 0.035))
+        rx = x + int(w * 0.3)
+        rw = x + w - rx
+        row = max(30, int(ph * 0.05))
+        self._text("Match name", ph * 0.03, MUTED, topleft=(rx, y))
+        fy = y + ph * 0.045
+        if host:
+            self._field("match_name", pygame.Rect(rx, fy, rw, row))
+        else:
+            self._text(room["name"], ph * 0.04, INK, midleft=(rx, fy + row / 2))
+        ty = fy + row + 8
+        bh = int(row * 0.85)
+        public = room["public"]
+        note = ("Public: anyone can find it in Public matches." if public else
+                "Private: only people you give the code to can join.")
+        if host:
+            bw = int(rw * 0.26)
+            self._button(pygame.Rect(rx, ty, bw, bh), "Public" if public else "Private",
+                         lambda: self.set_details(public=not public), public)
+            self._text(note + "  (click to change)", ph * 0.022, MUTED, midleft=(rx + bw + 12, ty + bh / 2))
+        else:
+            self._text(note, ph * 0.024, MUTED, midleft=(rx, ty + bh / 2))
+
+    # ---- Public matches ------------------------------------------------------------------------
+
+    def draw_matches(self) -> None:
+        p, grow = self._panel()
+        ph, pw = p.h, p.w
+        focus = self.focus
+        self._text("Public matches", ph * 0.07, (74, 117, 44), midtop=(p.centerx, p.y + ph * 0.025))
+        x, w = p.x + 40, pw - 80
+        row = max(34, int(ph * 0.055))
+        y = p.y + int(ph * 0.13)
+        self._field("search", pygame.Rect(x, y, int(w * 0.74), row))
+        self._button(pygame.Rect(x + int(w * 0.77), y, int(w * 0.23), row), "Refresh", self.fetch_matches,
+                     False, self.server_state == "ok")
+        y += row + 10
+
+        query = self.matches_query or ""
+        if self.server_state != "ok":
+            status, color = "Connect to a server on the Online screen first.", BAD
+        elif self.matches_state == "loading":
+            status, color = "Looking for matches...", MUTED
+        elif self.matches_state == "error":
+            status, color = self.matches_note, BAD
+        elif not self.matches:
+            status = (f'No public matches match "{query}".' if query else
+                      "No public matches right now. Host one and set it to Public!")
+            color = MUTED
+        else:
+            n = self.matches_total
+            status = f"{n} open match{'es' if n != 1 else ''}" + (f' for "{query}"' if query else "")
+            if n > len(self.matches):
+                status += f" (showing {len(self.matches)}, search to narrow it down)"
+            color = MUTED
+        self._text(status, ph * 0.026, color, topleft=(x, y))
+        y += ph * 0.05
+
+        # the list
+        rh = int(row * 1.45)
+        bottom = p.bottom - int(ph * 0.17)
+        fits = max(1, int((bottom - y) // (rh + 8)))
+        self.match_scroll = max(0, min(self.match_scroll, len(self.matches) - fits))
+        can_join = self.server_state == "ok" and not self.mods_on
+        shown = self.matches[self.match_scroll:self.match_scroll + fits]
+        for m in shown:
+            r = pygame.Rect(x, y, w, rh)
+            pygame.draw.rect(self.app.screen, (244, 246, 241), r, border_radius=10)
+            self._text(str(m.get("name", "")), rh * 0.36, INK, topleft=(r.x + 16, r.y + rh * 0.1))
+            self._text(self._listing_details(m), rh * 0.26, MUTED, bottomleft=(r.x + 16, r.bottom - rh * 0.12))
+            full = m.get("players", 0) >= m.get("max", 8)
+            self._button(pygame.Rect(r.right - int(w * 0.17) - 12, r.centery - row // 2, int(w * 0.17), row),
+                         "Full" if full else "Join", lambda c=m["code"]: self.join(c), True, can_join and not full)
+            y += rh + 8
+        if len(self.matches) > fits:
+            first = self.match_scroll + 1
+            self._text(f"{first}-{self.match_scroll + len(shown)} of {len(self.matches)}   (scroll for more)",
+                       ph * 0.022, MUTED, topleft=(x, y))
+
+        if self.mods_on:
+            self._text(self.MODS_MESSAGE, ph * 0.026, BAD, midbottom=(p.centerx, p.bottom - ph * 0.12))
+        elif self.message:
+            self._text(self.message, ph * 0.026, self.message_color, midbottom=(p.centerx, p.bottom - ph * 0.12))
+        bh = max(34, int(ph * 0.055))
+        self._button(pygame.Rect(p.centerx - int(70 * grow), p.bottom - int(ph * 0.05) - bh, int(140 * grow), bh),
+                     "Back", self.app.open_online)
+        self._text("Type to search   Enter: join the top match   Wheel / arrows: scroll   Esc: back", ph * 0.022,
+                   MUTED, midbottom=(p.centerx, p.bottom - 8))
+        self.focus = focus
+
+    @staticmethod
+    def _listing_details(m: dict) -> str:
+        size = dict(SIZES).get(m.get("size"), str(m.get("size", ""))).split(" ")[0]
+        goal = dict(GOALS).get(m.get("goal"), f"First to {m.get('goal')}")
+        modes = [MODE_NAMES.get(x, str(x)) for x in m.get("modes", [])]
+        speed = min(SPEEDS, key=lambda s: abs(s[0] - float(m.get("speed", 0.5))))[1]
+        parts = [f"Host: {m.get('host', '?')}", f"{m.get('players', 0)}/{m.get('max', 8)} players",
+                 f"{size} board", speed, goal, " + ".join(modes) if modes else "Classic"]
+        return "   ·   ".join(parts) + f"   ·   Code {m.get('code', '')}"
 
     # ---- match ------------------------------------------------------------------------------------
 

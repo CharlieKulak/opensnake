@@ -54,6 +54,14 @@ VERSUS_MODES = ["wall", "borderless", "cheese", "poison", "portal", "shield", "m
 MAX_TEAM = 4
 SIZES = {"small": (16, 12), "medium": (20, 16), "large": (28, 22)}
 DEFAULT_SETTINGS = {"size": "medium", "speed": 0.5, "apples": 3, "goal": 0, "modes": []}
+MAX_MATCH_NAME = 32
+MAX_LISTED = 50  # public matches returned per search
+
+
+def clean_match_name(name) -> str:
+    """A match name as shown to everyone: printable, single-spaced, not too long."""
+    text = "".join(ch for ch in str(name or "") if ch.isprintable())
+    return " ".join(text.split())[:MAX_MATCH_NAME].strip()
 
 
 def now_iso() -> str:
@@ -173,11 +181,32 @@ class Room:
         self.state = "lobby"
         self.game: Game | None = None
         self.task: asyncio.Task | None = None
+        self.name = f"{host.name}'s match"
+        self.public = False  # public matches show up in everyone's match search
 
     def info(self) -> dict:
         return {"t": "room", "code": self.code, "host": self.host.id, "state": self.state,
+                "name": self.name, "public": self.public,
                 "settings": self.settings, "players": [{"id": p.id, "name": p.name, "team": p.team}
                                                        for p in self.players]}
+
+    def set_details(self, m: dict) -> None:
+        """The host's choice of match name and whether it's public."""
+        if "name" in m:
+            self.name = clean_match_name(m["name"]) or f"{self.host.name}'s match"
+        if isinstance(m.get("public"), bool):
+            self.public = m["public"]
+
+    @property
+    def open(self) -> bool:
+        return self.state == "lobby" and len(self.players) < 2 * MAX_TEAM
+
+    def listing(self) -> dict:
+        """What the public match search shows about this match."""
+        s = self.settings
+        return {"code": self.code, "name": self.name, "host": self.host.name, "players": len(self.players),
+                "max": 2 * MAX_TEAM, "size": s["size"], "speed": s["speed"], "goal": s["goal"],
+                "modes": s["modes"]}
 
     async def broadcast(self, msg: dict) -> None:
         text = json.dumps(msg, separators=(",", ":"))
@@ -317,6 +346,7 @@ class Server:
         r.add_get("/api/records", self.records)
         r.add_get("/api/leaderboard/{category}", self.leaderboard)
         r.add_post("/api/runs", self.submit_run)
+        r.add_get("/api/matches", self.matches)
         r.add_get("/ws", self.websocket)
         if self.web_dir:
             r.add_get("/", self.index)
@@ -403,6 +433,21 @@ class Server:
             "wr": wr_before is None or time_ms < wr_before["time_ms"]})
 
     # -- versus multiplayer
+    async def matches(self, request: web.Request) -> web.Response:
+        """Public matches that can be joined, optionally searched by name, host or code.
+
+        Every word of ?q= has to appear in one of those (ignoring case)."""
+        words = request.query.get("q", "").lower().split()[:8]
+        found = []
+        for room in self.rooms.values():
+            if not (room.public and room.open):
+                continue
+            text = f"{room.name} {room.host.name} {room.code}".lower()
+            if all(w in text for w in words):
+                found.append(room)
+        found.sort(key=lambda r: (-len(r.players), r.name.lower()))  # busiest first
+        return web.json_response({"total": len(found), "matches": [r.listing() for r in found[:MAX_LISTED]]})
+
     def new_code(self) -> str:
         while True:
             code = "".join(random.choice(CODE_LETTERS) for _ in range(4))
@@ -447,6 +492,7 @@ class Server:
             await self.leave(p)
             room = Room(self, self.new_code(), p)
             room.update_settings(m.get("settings") or {})
+            room.set_details(m)
             self.rooms[room.code] = room
             room.add(p)
         elif t == "join":
@@ -474,6 +520,11 @@ class Server:
                 err = "Settings can only change in the lobby."
             else:
                 room.update_settings(m.get("settings") or {})
+        elif t == "details":
+            if p is not room.host:
+                err = "Only the host can rename the match or make it public."
+            else:
+                room.set_details(m)
         elif t == "start":
             err = "Only the host can start." if p is not room.host else room.start()
         elif t == "rematch":

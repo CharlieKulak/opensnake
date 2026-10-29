@@ -554,7 +554,7 @@ class App:
                 self.speedrun_key(ev)
             elif self.state == "addons":
                 self.addons_key(ev)
-            elif self.state in ("online", "lobby"):
+            elif self.state in ("online", "lobby", "matches"):
                 self.online.key(ev)
             elif self.state == "versus":
                 self.online.versus_key(ev)
@@ -574,6 +574,8 @@ class App:
                 self.focus = hit
         elif ev.type == pygame.MOUSEWHEEL and self.state == "speedrun":
             self.sr_scroll = max(0, self.sr_scroll - ev.y)
+        elif ev.type == pygame.MOUSEWHEEL and self.state == "matches":
+            self.online.scroll(-ev.y)
         elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
             self.click(ev.pos)
         elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1 and self.dragging:
@@ -620,7 +622,7 @@ class App:
         return None
 
     def click(self, pos):
-        if self.state in ("online", "lobby"):
+        if self.state in ("online", "lobby", "matches"):
             self.online.click(pos)
             return
         if self.state == "addons":
@@ -1731,6 +1733,8 @@ class App:
             self.online.draw_online()
         elif self.state == "lobby":
             self.online.draw_lobby()
+        elif self.state == "matches":
+            self.online.draw_matches()
 
     def frame(self):
         dt = self.clock.tick(60 if WEB else 120)

@@ -277,6 +277,8 @@ screen's WR column then shows the site's records instead of the global
 a 4-letter code; friends enter it under **join with a code**. Browser and
 desktop players can play in the same match. In the lobby:
 
+- The host can give the match a **name** and switch it from **Private** to
+  **Public**. Private matches can only be joined with the code.
 - Players are on the **Blue** or **Orange** team (up to 4 each); use
   **Switch team** to change.
 - The host chooses the board size, speed, how much fruit, how to win (last
@@ -285,6 +287,11 @@ desktop players can play in the same match. In the lobby:
   Light).
 - The host presses **Start match**. After a 3-2-1 countdown everyone steers
   their own snake.
+
+**Public matches** (or **B** on the Online screen) lists every public match on
+that server that's still in its lobby and has room, busiest first. Type to
+search by match name, host or code; the list refreshes on its own. Press
+**Join** on a match (or **Enter** for the top one).
 
 Crashing knocks only your snake out; you can keep watching. Two snakes moving
 into the same cell are both knocked out. You don't need an account to play

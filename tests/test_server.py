@@ -218,3 +218,61 @@ class ModsOfflineOnlyTests(ServerTestCase):
         ok = make_custom(10, 9, ["wall"], 3, 1, 130)  # built-in modes are fine
         res = (await self.post("/api/runs", bot_run(ok, 4, random.Random(3)).to_json(), token))[1]
         self.assertTrue(res.get("valid"), res)
+
+
+class PublicMatchTests(ServerTestCase):
+    recv = VersusTests.recv
+
+    async def host(self, player, **details):
+        ws = await self.client.ws_connect(f"/ws?name={player}")
+        await self.recv(ws, "welcome")
+        await ws.send_json({"t": "host", **details})
+        return ws, await self.recv(ws, "room")
+
+    async def search(self, q=""):
+        status, data = await self.get(f"/api/matches?q={q}")
+        self.assertEqual(status, 200)
+        return [m["name"] for m in data["matches"]]
+
+    async def test_names_and_privacy(self):
+        a, room = await self.host("Ann")
+        self.assertEqual((room["name"], room["public"]), ("Ann's match", False))  # private by default
+        self.assertEqual(await self.search(), [])
+        await a.send_json({"t": "details", "name": "  Snake   party\n ", "public": True})
+        room = await self.recv(a, "room")
+        self.assertEqual((room["name"], room["public"]), ("Snake party", True))
+        self.assertEqual(await self.search(), ["Snake party"])
+        await a.send_json({"t": "details", "name": "x" * 99})
+        self.assertEqual(len((await self.recv(a, "room"))["name"]), 32)
+        await a.send_json({"t": "details", "name": ""})  # blank goes back to the default
+        self.assertEqual((await self.recv(a, "room"))["name"], "Ann's match")
+
+        guest = await self.client.ws_connect("/ws?name=Gus")
+        await self.recv(guest, "welcome")
+        await guest.send_json({"t": "join", "code": room["code"]})
+        await self.recv(guest, "room")
+        await guest.send_json({"t": "details", "public": False})
+        self.assertIn("host", (await self.recv(guest, "error"))["msg"])
+        await a.send_json({"t": "start"})  # started matches can't be joined, so they're not listed
+        await self.recv(a, "start")
+        self.assertEqual(await self.search(), [])
+        for ws in (a, guest):
+            await ws.close()
+
+    async def test_search(self):
+        socks = []
+        for name, title in [("Ann", "Friday fun"), ("Bob", "Pros only"), ("Cat", "fun for everyone")]:
+            ws, room = await self.host(name, name=title, public=True)
+            socks.append(ws)
+        hidden, _ = await self.host("Dan", name="Secret fun")  # private
+        socks.append(hidden)
+        self.assertEqual(sorted(await self.search()), ["Friday fun", "Pros only", "fun for everyone"])
+        self.assertEqual(sorted(await self.search("FUN")), ["Friday fun", "fun for everyone"])
+        self.assertEqual(await self.search("fun%20cat"), ["fun for everyone"])  # host names count too
+        self.assertEqual(await self.search(room["code"]), ["fun for everyone"])  # and codes
+        self.assertEqual(await self.search("nothing"), [])
+        status, data = await self.get("/api/matches")
+        listing = next(m for m in data["matches"] if m["name"] == "Pros only")
+        self.assertEqual((listing["host"], listing["players"], listing["max"]), ("Bob", 1, 8))
+        for ws in socks:
+            await ws.close()
