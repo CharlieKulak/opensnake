@@ -358,7 +358,7 @@ class Server:
     async def revalidate(request: web.Request, response: web.StreamResponse) -> None:
         """Make browsers check for a newer build every time (a cheap 304 if nothing changed).
 
-        Without this they can keep running an old opensnake.apk for hours after an update."""
+        The game files also get a new name with every build (see web-support/build.sh)."""
         response.headers.setdefault("Cache-Control", "no-cache")
 
     async def shutdown(self, app: web.Application) -> None:
@@ -559,12 +559,12 @@ class Server:
 
 def stale_build(web_dir: Path | None) -> bool:
     """True if the game code has changed since the web game was built (e.g. pulled but not rebuilt)."""
-    apk = web_dir / "opensnake.apk" if web_dir else None
-    if not apk or not apk.is_file():
+    builds = list(web_dir.glob("opensnake*.tar.gz")) if web_dir else []
+    if not builds:
         return False
     code = Path(__file__).parent
     newest = max(f.stat().st_mtime for f in code.rglob("*.py") if f.name != "server.py")
-    return newest > apk.stat().st_mtime
+    return newest > max(f.stat().st_mtime for f in builds)
 
 
 def main(argv=None) -> None:

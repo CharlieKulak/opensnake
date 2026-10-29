@@ -77,7 +77,7 @@ class CacheTests(ServerTestCase):
         from opensnake.server import stale_build
         web_dir = Path(self.tmp.name) / "web"
         web_dir.mkdir()
-        apk = web_dir / "opensnake.apk"
+        apk = web_dir / "opensnake-0123456789ab.tar.gz"
         apk.write_bytes(b"build")
         os.utime(apk, (0, 0))  # built long before the code
         self.assertTrue(stale_build(web_dir))

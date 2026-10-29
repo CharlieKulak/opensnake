@@ -9,7 +9,7 @@
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
-src="$here/build/opensnake"  # the folder name becomes the game package name (opensnake.apk)
+src="$here/build/opensnake"  # the folder name becomes the game package name (opensnake.*)
 python=${PYTHON:-python3}
 
 rm -rf "$src"
@@ -21,6 +21,24 @@ cp "$here/main.py" "$src/main.py"
 cp "$root/packaging/linux/opensnake-256.png" "$src/favicon.png"
 
 "$python" -m pygbag --build --title OpenSnake "$src"
+
+# Name the game files after their contents (opensnake-<hash>.tar.gz) and point
+# index.html at them. index.html is never cached, so every build is fetched
+# under a new name and a browser can't keep playing an old copy.
+"$python" - "$src/build/web" <<'PY'
+import hashlib, sys
+from pathlib import Path
+web = Path(sys.argv[1])
+page = web / "index.html"
+html = page.read_text(encoding="utf-8")
+for ext in ("tar.gz", "apk"):
+    old = web / f"opensnake.{ext}"
+    new = f"opensnake-{hashlib.sha256(old.read_bytes()).hexdigest()[:12]}.{ext}"
+    assert html.count(f'"{old.name}"') == 1, f"index.html doesn't load {old.name} the expected way"
+    html = html.replace(f'"{old.name}"', f'"{new}"')
+    old.rename(web / new)
+page.write_text(html, encoding="utf-8")
+PY
 echo "Built: $src/build/web/"
 
 if [ "$1" = "--serve" ]; then
