@@ -96,12 +96,6 @@ def arc_band(cx, cy, r_out, r_in, a0, a1, n=28):
     return outer + inner
 
 
-def thick_line(s, color, a, b, w):
-    pygame.draw.line(s, color, a, b, max(1, int(w)))
-    for p in (a, b):
-        pygame.draw.circle(s, color, p, w / 2)
-
-
 def dashed_ring(s, color, cx, cy, r, w, dashes=10, fill=0.6):
     for i in range(dashes):
         a0 = 2 * math.pi * i / dashes

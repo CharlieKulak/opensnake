@@ -7,19 +7,17 @@ browser's storage for that site, or in the desktop settings file per server.
 
 from __future__ import annotations
 
+import traceback
 import urllib.parse
 
 import pygame
 
 from . import cosmetics as cos
 from .game import DIRS, OPPOSITE, Game, apply_state
-from .modes import MODE_NAMES
+from .modes import MODE_NAMES, VERSUS_MODES, VERSUS_SIZES
 from .net import WEB, Request, Socket, page_origin, set_page_title, web_storage_get, web_storage_set, ws_url
 
-# Must match opensnake/server.py (which can't be imported here: the browser build doesn't ship it).
-VERSUS_MODES = ["wall", "borderless", "cheese", "poison", "portal", "shield", "magnet", "twin",
-                "statue", "key", "light"]
-SIZES = [("small", "Small 16x12"), ("medium", "Medium 20x16"), ("large", "Large 28x22")]
+SIZES = [(k, f"{k.capitalize()} {w}x{h}") for k, (w, h) in VERSUS_SIZES.items()]
 SPEEDS = [(0.25, "Slow"), (0.5, "Default"), (0.75, "Fast")]
 FRUITS = [1, 3, 5]
 GOALS = [(0, "Last snake alive"), (10, "First to 10"), (20, "First to 20"), (30, "First to 30")]
@@ -100,7 +98,6 @@ class Online:
         self.sock: Socket | None = None
         self.outbox: list[dict] = []
         self.my_id = None
-        self.my_name = ""
         self.room: dict | None = None
         self.game: Game | None = None
         self.you = -1
@@ -383,7 +380,11 @@ class Online:
             if req.poll():
                 self.requests.remove((req, then))
                 if then:
-                    then(req)
+                    try:
+                        then(req)
+                    except Exception:  # a bug handling one reply mustn't stop the whole game
+                        traceback.print_exc()
+                        self.say("Something went wrong talking to the server. Try again.", BAD)
         if self.sock:
             if self.sock.state == "open" and self.outbox:
                 for m in self.outbox:
@@ -400,7 +401,10 @@ class Online:
                     continue
                 if carried and msg.get("t") == "state":
                     msg["s"]["events"] = carried + msg["s"].get("events", [])
-                self.on_message(msg)
+                try:
+                    self.on_message(msg)
+                except Exception:  # (as for requests: one bad message mustn't stop the game)
+                    traceback.print_exc()
             if self.sock.state in ("closed", "error"):
                 lost = (self.sock.state == "error" and self.expect_match) or self.room is not None
                 self.sock = None
@@ -425,7 +429,7 @@ class Online:
         t = m.get("t")
         app = self.app
         if t == "welcome":
-            self.my_id, self.my_name = m["id"], m["name"]
+            self.my_id = m["id"]
         elif t == "error":
             self.say(m.get("msg", "Error"), BAD)
         elif t == "room":
@@ -778,7 +782,7 @@ class Online:
 
     def draw_online(self) -> None:
         p, grow = self._panel()
-        ph, pw = p.h, p.w
+        ph = p.h
         focus = self.focus  # clicks reset focus; keep it while drawing
         self._text("Online", ph * 0.06, (74, 117, 44), midtop=(p.centerx, p.y + ph * 0.02))
         top = self.hub.draw_tabs(p, p.y + int(ph * 0.09)) + int(ph * 0.03)

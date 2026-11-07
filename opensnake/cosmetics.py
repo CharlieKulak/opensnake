@@ -251,10 +251,6 @@ def skin_outline(skin: Skin, now: float) -> tuple | None:
     return _lerp(skin.outline, (255, 255, 255), 0.35 * k)
 
 
-def skin_preview_color(skin: Skin) -> tuple:
-    return skin.colors[0]
-
-
 # ---- loot-box texture packs -------------------------------------------------------
 #
 # Colour packs shipped with the game but only usable once you've won them

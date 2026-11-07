@@ -7,23 +7,18 @@ object (requests, the login and its drawing helpers).
 from __future__ import annotations
 
 import base64
-import io
 import math
 import random
+import sys
 import urllib.parse
 
 import pygame
 
 from . import cosmetics as cos
-from .net import ImagePicker, load_picture
+from .net import ImagePicker, decode_png, load_picture
+from .online import ACCENT, BAD, GOOD, INK, MUTED, WHITE
 from .speedrun import category_from_def, describe, format_time
 
-WHITE = (255, 255, 255)
-INK = (40, 52, 33)
-MUTED = (96, 112, 86)
-ACCENT = (61, 111, 232)
-GOOD = (40, 160, 70)
-BAD = (210, 60, 50)
 CARD = (244, 246, 241)
 POINTS = (214, 150, 0)
 
@@ -338,10 +333,10 @@ class Hub:
         def done(r):
             if r.ok and self.pictures.get(key, [None])[0] == version:
                 try:
-                    img = pygame.image.load(io.BytesIO(base64.b64decode(r.data["png"])), "picture.png")
+                    img = decode_png(base64.b64decode(r.data["png"]))
                     self.pictures[key][1] = img.convert_alpha() if pygame.display.get_surface() else img
-                except (pygame.error, KeyError, ValueError):
-                    pass
+                except Exception as e:  # a picture that won't load just isn't shown
+                    print(f"Couldn't show {name}'s picture: {e}", file=sys.stderr)
         self.on.request("GET", f"/api/pictures/{urllib.parse.quote(name)}?v={version}", then=done, auth=False)
         return None
 

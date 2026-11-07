@@ -325,3 +325,38 @@ class MessageTests(ServerTestCase):
         self.assertEqual([m["body"] for m in older][:2], ["hey bob", "msg 0"])
         self.assertEqual(len(older), 11)
         await wb.close()
+
+
+class ClientRobustnessTests(ServerTestCase):
+    """The game side: a bad reply can't freeze the game, and downloaded pictures decode."""
+
+    def setUp(self):
+        import os
+        import tempfile
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+        self.cfg = tempfile.TemporaryDirectory()
+        os.environ["OPENSNAKE_CONFIG_DIR"] = self.cfg.name
+        from opensnake.app import App
+        self.app = App()
+
+    def tearDown(self):
+        self.cfg.cleanup()
+
+    def test_a_failing_reply_handler_does_not_stop_the_game(self):
+        class Done:
+            done = ok = True
+            def poll(self):
+                return True
+        later = []
+        on = self.app.online
+        on.requests = [(Done(), lambda r: 1 / 0), (Done(), lambda r: later.append("ran"))]
+        on.poll()  # used to raise, which stopped the main loop in the browser
+        self.assertEqual(later, ["ran"])
+        self.assertIn("went wrong", on.message)
+
+    def test_pictures_decode(self):
+        import base64
+        from opensnake.net import decode_png, load_picture
+        img = decode_png(base64.b64decode(load_picture("packaging/linux/opensnake-256.png")))
+        self.assertEqual(img.get_size(), (128, 128))

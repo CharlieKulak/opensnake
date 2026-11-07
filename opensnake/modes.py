@@ -36,6 +36,12 @@ MODE_DESCS = {m[0]: m[2] for m in MODES}
 
 CONFLICTS = [("sokoban", "portal"), ("sokoban", "poison"), ("portal", "poison")]
 
+# Online versus: the modes that work with teams, and the board sizes (shared by
+# the server and the game, which can't import the server in the browser build).
+VERSUS_MODES = ["wall", "borderless", "cheese", "poison", "portal", "shield", "magnet", "twin",
+                "statue", "key", "light"]
+VERSUS_SIZES = {"small": (16, 12), "medium": (20, 16), "large": (28, 22)}
+
 # Board size limits (cells). Any rectangle in this range works.
 MIN_BOARD_W, MIN_BOARD_H = 8, 5
 MAX_BOARD = 1000

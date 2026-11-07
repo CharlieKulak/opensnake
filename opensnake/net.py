@@ -48,8 +48,11 @@ window.osnet = window.osnet || {
   pick(size) {
     osnet.picked = {state: 'picking', data: ''};
     const input = document.createElement('input');
-    input.type = 'file'; input.accept = 'image/*';
+    input.type = 'file'; input.accept = 'image/*'; input.style.display = 'none';
+    document.body.appendChild(input);  // (some browsers only open pickers that are on the page)
+    const done = () => { if (input.parentNode) input.parentNode.removeChild(input); };
     input.onchange = () => {
+      done();
       const file = input.files[0];
       if (!file) { osnet.picked.state = 'cancel'; return; }
       const img = new Image();
@@ -63,7 +66,7 @@ window.osnet = window.osnet || {
       img.onerror = () => { osnet.picked.state = 'error'; };
       img.src = URL.createObjectURL(file);
     };
-    input.oncancel = () => { osnet.picked.state = 'cancel'; };
+    input.oncancel = () => { done(); osnet.picked.state = 'cancel'; };
     input.click();
   },
   pickState() { return JSON.stringify(osnet.picked || {state: 'idle', data: ''}); }
@@ -262,6 +265,26 @@ def square_png(surface) -> str:
     buf = io.BytesIO()
     pygame.image.save(small, buf, "picture.png")
     return base64.b64encode(buf.getvalue()).decode()
+
+
+def decode_png(data: bytes):
+    """A PNG (bytes) as a pygame image.
+
+    pygbag's pygame.image.load can't read from memory in the browser, so there
+    the bytes go through a file in the page's own (in-memory) file system."""
+    import io
+
+    import pygame
+    if not WEB:
+        return pygame.image.load(io.BytesIO(data), "picture.png")
+    path = f"/tmp/opensnake-picture-{next(_ids)}.png"
+    with open(path, "wb") as f:
+        f.write(data)
+    try:
+        return pygame.image.load(path)
+    finally:
+        import os
+        os.remove(path)
 
 
 def load_picture(path: str) -> str:

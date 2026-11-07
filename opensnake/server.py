@@ -59,7 +59,7 @@ from . import cosmetics as cos
 from .bots import BOT_NAMES, LEVEL_NAMES, LEVELS
 from .bots import choose as bot_choose
 from .game import DIRS, Game, game_to_state
-from .modes import BUILTIN_MODE_IDS, speed_ms
+from .modes import BUILTIN_MODE_IDS, VERSUS_MODES, VERSUS_SIZES, speed_ms
 from .speedrun import CATEGORY_BY_ID, CUSTOM_PREFIX, category_from_def, verify
 
 REPO = Path(__file__).resolve().parents[1]
@@ -70,11 +70,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,20}$")
 MIN_PASSWORD = 4
 CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"  # no I or O, which look like 1 and 0
 
-# Modes that work in versus (the rest are single-player ideas or conflict with teams).
-VERSUS_MODES = ["wall", "borderless", "cheese", "poison", "portal", "shield", "magnet", "twin",
-                "statue", "key", "light"]
 MAX_TEAM = 4
-SIZES = {"small": (16, 12), "medium": (20, 16), "large": (28, 22)}
 DEFAULT_SETTINGS = {"size": "medium", "speed": 0.5, "apples": 3, "goal": 0, "modes": []}
 MAX_MATCH_NAME = 32
 MAX_LISTED = 50  # public matches returned per search
@@ -88,10 +84,14 @@ MAX_PICTURE_SIDE = 512
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
-def clean_match_name(name) -> str:
-    """A match name as shown to everyone: printable, single-spaced, not too long."""
-    text = "".join(ch for ch in str(name or "") if ch.isprintable())
-    return " ".join(text.split())[:MAX_MATCH_NAME].strip()
+def clean_text(value, limit: int, single_spaced: bool = True) -> str:
+    """Text players typed, as shown to others: printable characters only, trimmed to ``limit``.
+
+    ``single_spaced`` also turns runs of spaces into one (names, bios); messages keep theirs."""
+    text = "".join(ch for ch in str(value or "") if ch.isprintable())
+    if single_spaced:
+        text = " ".join(text.split())
+    return text.strip()[:limit].strip()
 
 
 def now_iso() -> str:
@@ -267,8 +267,8 @@ class Database:
         return self.db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
 
     def wrs_held(self, user_id: int) -> int:
-        return sum(1 for cat, rec in self.records().items()
-                   if cat in CATEGORY_BY_ID and rec["player"].lower() == self.user_by_id(user_id)["name"].lower())
+        name = self.user_by_id(user_id)["name"].lower()
+        return sum(1 for cat, rec in self.records().items() if cat in CATEGORY_BY_ID and rec["player"].lower() == name)
 
     def profile(self, row: sqlite3.Row, private: bool = False) -> dict:
         """What everyone can see about a player (plus points and items for the player themself)."""
@@ -283,7 +283,7 @@ class Database:
 
     def set_profile(self, user_id: int, data: dict) -> None:
         if "bio" in data:
-            bio = " ".join("".join(ch for ch in str(data["bio"]) if ch.isprintable()).split())[:MAX_BIO]
+            bio = clean_text(data["bio"], MAX_BIO)
             self.db.execute("UPDATE users SET bio = ? WHERE id = ?", (bio, user_id))
         if "avatar" in data:
             icon, color = cos.parse_avatar(data["avatar"])
@@ -398,7 +398,7 @@ class Database:
     def send_message(self, sender: int, recipient: int, body) -> dict:
         if self.friendship(sender, recipient) != "friends":
             raise PermissionError("You can only message your friends.")
-        text = "".join(ch for ch in str(body or "") if ch.isprintable()).strip()[:MAX_MESSAGE]
+        text = clean_text(body, MAX_MESSAGE, single_spaced=False)
         if not text:
             raise ValueError("Type a message.")
         cur = self.db.execute("INSERT INTO messages (sender, recipient, body, created) VALUES (?, ?, ?, ?)",
@@ -465,7 +465,7 @@ class Database:
             raise LookupError("No such category.")
         if row["creator"] != user_id:
             raise PermissionError("Only the player who made this category can rename it.")
-        clean = " ".join("".join(ch for ch in str(name or "") if ch.isprintable()).split())[:MAX_CATEGORY_NAME]
+        clean = clean_text(name, MAX_CATEGORY_NAME)
         if not clean:
             raise ValueError("Type a name.")
         definition = {**json.loads(row["def"]), "name": clean}  # (the name isn't part of the id: records stay)
@@ -563,7 +563,7 @@ class Room:
     def set_details(self, m: dict) -> None:
         """The host's choice of match name and whether it's public."""
         if "name" in m:
-            self.name = clean_match_name(m["name"]) or f"{self.host.name}'s match"
+            self.name = clean_text(m["name"], MAX_MATCH_NAME) or f"{self.host.name}'s match"
         if isinstance(m.get("public"), bool):
             self.public = m["public"]
 
@@ -614,7 +614,7 @@ class Room:
 
     def update_settings(self, new: dict) -> None:
         s = self.settings
-        if new.get("size") in SIZES:
+        if new.get("size") in VERSUS_SIZES:
             s["size"] = new["size"]
         try:
             s["speed"] = min(1.0, max(0.0, float(new.get("speed", s["speed"]))))
@@ -632,7 +632,7 @@ class Room:
         if not all(teams):
             return "Both teams need at least one player."
         order = sorted(self.players, key=lambda p: p.team)
-        w, h = SIZES[self.settings["size"]]
+        w, h = VERSUS_SIZES[self.settings["size"]]
         self.game = Game(w, h, self.settings["modes"], self.settings["apples"],
                          "apple", random.Random(), teams=[p.team for p in order], goal=self.settings["goal"])
         for i, p in enumerate(order):
@@ -732,6 +732,13 @@ class Server:
     def error(message: str, status: int = 400) -> web.Response:
         return web.json_response({"error": message}, status=status)
 
+    def account(self, request: web.Request, message: str) -> sqlite3.Row:
+        """The logged-in player making a request; if there isn't one, answers 401 with ``message``."""
+        user = self.db.user_for(self.token(request))
+        if not user:
+            raise web.HTTPUnauthorized(text=json.dumps({"error": message}), content_type="application/json")
+        return user
+
     def app(self) -> web.Application:
         app = web.Application(client_max_size=4 * 1024 * 1024)
         app.on_startup.append(self.startup)
@@ -824,9 +831,7 @@ class Server:
         return web.json_response({})
 
     async def me(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Not logged in.", 401)
+        user = self.account(request, "Not logged in.")
         self.db.settle_wr_holds()
         return web.json_response({"username": user["name"], **self.db.profile(self.db.user_by_id(user["id"]), True)})
 
@@ -839,9 +844,7 @@ class Server:
                 "online": bool(conns), "in_match": bool(playing)}
 
     async def set_profile(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to edit your profile.", 401)
+        user = self.account(request, "Log in to edit your profile.")
         try:
             self.db.set_profile(user["id"], await self.body(request))
         except ValueError as e:
@@ -849,9 +852,7 @@ class Server:
         return web.json_response(self.db.profile(self.db.user_by_id(user["id"]), True))
 
     async def set_picture(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to change your picture.", 401)
+        user = self.account(request, "Log in to change your picture.")
         try:
             png = base64.b64decode(str((await self.body(request)).get("png", "")), validate=True)
         except binascii.Error:
@@ -884,18 +885,14 @@ class Server:
                                   "friend": self.db.friendship(me["id"], row["id"]) if me else "none"})
 
     async def friends(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to see your friends.", 401)
+        user = self.account(request, "Log in to see your friends.")
         lists = self.db.friends(user["id"])
         out = {key: [self.summary(self.db.user_by_id(uid)) for uid in ids] for key, ids in lists.items()}
         out["friends"].sort(key=lambda f: (not f["online"], f["name"].lower()))
         return web.json_response(out)
 
     async def friend_target(self, request: web.Request):
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return None, None, self.error("Log in to add friends.", 401)
+        user = self.account(request, "Log in to add friends.")
         other = self.db.user_row(str((await self.body(request)).get("name", "")))
         if not other:
             return None, None, self.error("No player with that name.", 404)
@@ -934,9 +931,7 @@ class Server:
 
     # -- store
     async def buy(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to use the store.", 401)
+        user = self.account(request, "Log in to use the store.")
         item = str((await self.body(request)).get("item", ""))
         try:
             balance = self.db.buy(user["id"], item)
@@ -945,9 +940,7 @@ class Server:
         return web.json_response({"item": item, "points": balance})
 
     async def open_crate(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to open loot boxes.", 401)
+        user = self.account(request, "Log in to open loot boxes.")
         try:
             result = self.db.open_crate(user["id"], str((await self.body(request)).get("crate", "")))
         except ValueError as e:
@@ -956,9 +949,7 @@ class Server:
 
     async def finish_round(self, request: web.Request) -> web.Response:
         """Snake points for a finished single-player round (sent by the game when you die or win)."""
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to earn snake points.", 401)
+        user = self.account(request, "Log in to earn snake points.")
         try:
             fruit = max(0, int((await self.body(request)).get("fruit", 0)))
         except (TypeError, ValueError):
@@ -976,9 +967,7 @@ class Server:
 
     # -- messages
     async def chats(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to see your messages.", 401)
+        user = self.account(request, "Log in to see your messages.")
         chats = []
         for c in self.db.chats(user["id"]):
             row = self.db.user_by_id(c["user"])
@@ -986,9 +975,7 @@ class Server:
         return web.json_response({"chats": chats, "unread": sum(c["unread"] for c in chats)})
 
     async def conversation(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to see your messages.", 401)
+        user = self.account(request, "Log in to see your messages.")
         other = self.db.user_row(request.match_info["name"])
         if not other:
             return self.error("No player with that name.", 404)
@@ -999,9 +986,7 @@ class Server:
         return web.json_response({"messages": self.db.conversation(user["id"], other["id"], before)})
 
     async def send_message(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to send messages.", 401)
+        user = self.account(request, "Log in to send messages.")
         data = await self.body(request)
         other = self.db.user_row(str(data.get("to", "")))
         if not other:
@@ -1022,9 +1007,7 @@ class Server:
         return web.json_response(msg)
 
     async def rename_category(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to rename categories.", 401)
+        user = self.account(request, "Log in to rename categories.")
         data = await self.body(request)
         try:
             name = self.db.rename_category(str(data.get("id", "")), user["id"], data.get("name"))
@@ -1037,9 +1020,7 @@ class Server:
         return web.json_response({"id": data.get("id"), "name": name})
 
     async def share_category(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to share categories.", 401)
+        user = self.account(request, "Log in to share categories.")
         definition = (await self.body(request)).get("def")
         try:
             cid = self.db.share_category(definition if isinstance(definition, dict) else {}, user["id"])
@@ -1056,9 +1037,7 @@ class Server:
                                   "entries": self.db.leaderboard(request.match_info["category"])})
 
     async def submit_run(self, request: web.Request) -> web.Response:
-        user = self.db.user_for(self.token(request))
-        if not user:
-            return self.error("Log in to submit runs.", 401)
+        user = self.account(request, "Log in to submit runs.")
         run = await self.body(request)
         category = str(run.get("category", ""))
         if category not in CATEGORY_BY_ID and not category.startswith(CUSTOM_PREFIX):
