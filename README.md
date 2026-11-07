@@ -370,7 +370,9 @@ opponents don't change your rank.
 **Community.** Custom speedrun categories (see Custom categories above) that
 players have made, with who made them, how many people have played them and
 the WR. **Share my categories** adds yours. A category's creator is whoever
-shared it, or ran it, first. **Play** starts a run; **Save** adds it to your
+shared it, or ran it, first, and they can **Rename** it at any time: its
+records stay, and everyone who saved it gets the new name the next time they
+open the Community tab. **Play** starts a run; **Save** adds it to your
 Speedrun screen.
 
 Crashing knocks only your snake out; you can keep watching. Two snakes moving

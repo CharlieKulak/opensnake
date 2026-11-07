@@ -249,3 +249,25 @@ class PictureTests(ServerTestCase):
             self.assertIn(why, res["error"])
         self.assertEqual((await self.post("/api/profile/picture", {"png": ""})) [0], 401)
         self.assertEqual((await self.get("/api/pictures/alice"))[0], 404)
+
+
+class RenameCategoryTests(ServerTestCase):
+    async def test_only_the_creator_can_rename(self):
+        alice, bob = await self.account("alice"), await self.account("bobby")
+        cat = make_custom(10, 9, ["wall"], 3, 1, 130, name="Wally")
+        await self.post("/api/runs", bot_run(cat, 4, random.Random(3)).to_json(), alice)
+        status, res = await self.post("/api/categories/rename", {"id": cat.id, "name": "  Wall   Sprint\n"}, alice)
+        self.assertEqual((status, res["name"]), (200, "Wall Sprint"))
+        listed = (await self.get("/api/categories"))[1]["categories"][0]
+        self.assertEqual((listed["name"], listed["def"]["name"], listed["wr"]["player"]),
+                         ("Wall Sprint", "Wall Sprint", "alice"))  # the record stays
+        self.assertEqual((await self.get("/api/categories?q=sprint"))[1]["categories"][0]["id"], cat.id)
+        self.assertEqual((await self.post("/api/categories/rename", {"id": cat.id, "name": "Mine"}, bob))[0], 403)
+        self.assertEqual((await self.post("/api/categories/rename", {"id": "custom-nope", "name": "x"}, alice))[0], 404)
+        self.assertEqual((await self.post("/api/categories/rename", {"id": cat.id, "name": "   "}, alice))[0], 400)
+        self.assertEqual((await self.post("/api/categories/rename", {"id": cat.id, "name": "x"}))[0], 401)
+        long = (await self.post("/api/categories/rename", {"id": cat.id, "name": "y" * 99}, alice))[1]["name"]
+        self.assertEqual(len(long), 40)
+        # someone else running it later doesn't change its name back
+        await self.post("/api/runs", bot_run(cat, 5, random.Random(4)).to_json(), bob)
+        self.assertEqual((await self.get("/api/categories"))[1]["categories"][0]["name"], long)

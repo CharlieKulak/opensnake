@@ -25,6 +25,7 @@ HTTP API (JSON):
     POST /api/rounds          {fruit}            -> snake points for a finished round
     GET  /api/categories?q=                      -> community custom speedrun categories
     POST /api/categories      {def}              -> share a custom category
+    POST /api/categories/rename  {id, name}      -> rename a category you made
     GET  /api/info                               -> {server, version, site}
     GET  /api/records                            -> {records: {category: {time_ms, player, date}}}
     GET  /api/leaderboard/{category}             -> {entries: [{player, time_ms, date}]}
@@ -75,6 +76,7 @@ DEFAULT_SETTINGS = {"size": "medium", "speed": 0.5, "apples": 3, "goal": 0, "mod
 MAX_MATCH_NAME = 32
 MAX_LISTED = 50  # public matches returned per search
 MAX_BIO = 160
+MAX_CATEGORY_NAME = 40
 ROUND_GAP = 2.0  # seconds between paid single-player rounds (one account can't farm faster)
 MAX_PICTURE_BYTES = 256 * 1024
 MAX_PICTURE_SIDE = 512
@@ -409,6 +411,22 @@ class Database:
         self.db.commit()
         return cat.id
 
+    def rename_category(self, category_id: str, user_id: int, name) -> str:
+        """Rename a community category; only the player who made it can."""
+        row = self.db.execute("SELECT creator, def FROM categories WHERE id = ?", (category_id,)).fetchone()
+        if not row:
+            raise LookupError("No such category.")
+        if row["creator"] != user_id:
+            raise PermissionError("Only the player who made this category can rename it.")
+        clean = " ".join("".join(ch for ch in str(name or "") if ch.isprintable()).split())[:MAX_CATEGORY_NAME]
+        if not clean:
+            raise ValueError("Type a name.")
+        definition = {**json.loads(row["def"]), "name": clean}  # (the name isn't part of the id: records stay)
+        self.db.execute("UPDATE categories SET name = ?, def = ? WHERE id = ?",
+                        (clean, json.dumps(definition), category_id))
+        self.db.commit()
+        return clean
+
     def community(self, query: str = "", limit: int = 100) -> list[dict]:
         rows = self.db.execute("""
             SELECT categories.*, users.name AS creator_name,
@@ -694,6 +712,7 @@ class Server:
         r.add_post("/api/rounds", self.finish_round)
         r.add_get("/api/categories", self.categories)
         r.add_post("/api/categories", self.share_category)
+        r.add_post("/api/categories/rename", self.rename_category)
         r.add_get("/ws", self.websocket)
         if self.web_dir:
             r.add_get("/", self.index)
@@ -903,6 +922,21 @@ class Server:
     # -- community categories
     async def categories(self, request: web.Request) -> web.Response:
         return web.json_response({"categories": self.db.community(request.query.get("q", "").strip()[:40])})
+
+    async def rename_category(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to rename categories.", 401)
+        data = await self.body(request)
+        try:
+            name = self.db.rename_category(str(data.get("id", "")), user["id"], data.get("name"))
+        except LookupError as e:
+            return self.error(str(e), 404)
+        except PermissionError as e:
+            return self.error(str(e), 403)
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response({"id": data.get("id"), "name": name})
 
     async def share_category(self, request: web.Request) -> web.Response:
         user = self.db.user_for(self.token(request))

@@ -58,6 +58,7 @@ class Hub:
         self.busy = False
         self.pictures: dict = {}           # player name -> [version, image or None while loading]
         self.picker: ImagePicker | None = None
+        self.renaming: str | None = None   # id of the community category being renamed
         self.typing_path = False           # no file dialog here: type the picture's path instead
 
     @property
@@ -69,7 +70,7 @@ class Hub:
     def fields_for(self, tab: str) -> list[str]:
         return {"profile": ([] if self.viewing else ["bio"] + (["picture_path"] if self.typing_path else [])),
                 "friends": ["users"],
-                "community": ["community"]}.get(tab, [])
+                "community": ["community"] + (["rename"] if self.renaming else [])}.get(tab, [])
 
     def open_tab(self, tab: str) -> None:
         self.on.tab = tab
@@ -116,10 +117,47 @@ class Hub:
         def done(r, q=query):
             if r.ok and q == self.community_query:
                 self.community = r.data.get("categories", [])
+                self.sync_names(self.community)
             elif not r.ok:
                 self.community = []
                 self.on.say(r.message, BAD)
         self.on.request("GET", "/api/categories?" + urllib.parse.urlencode({"q": query}), then=done, auth=False)
+
+    def sync_names(self, entries) -> None:
+        """Saved community categories take the name their creator has given them since."""
+        from dataclasses import replace
+        names = {e["id"]: e["name"] for e in entries}
+        changed = False
+        for i, c in enumerate(self.app.custom_cats):
+            if c.id in names and c.name != names[c.id]:
+                self.app.custom_cats[i] = replace(c, name=names[c.id])
+                changed = True
+        if changed:
+            self.app.save_customs()
+
+    def start_rename(self, entry: dict) -> None:
+        self.renaming = entry["id"]
+        self.on.fields["rename"].value = entry["name"]
+        self.on.focus = "rename"
+
+    def cancel_rename(self) -> None:
+        self.renaming = None
+        self.on.focus = None
+
+    def save_rename(self) -> None:
+        cid, name = self.renaming, self.on.fields["rename"].value.strip()
+
+        def done(r):
+            if r.ok:
+                for e in self.community or []:
+                    if e["id"] == cid:
+                        e["name"] = r.data["name"]
+                self.sync_names(self.community or [])
+                self.on.say(f"Renamed to \"{r.data['name']}\".", GOOD)
+                self.cancel_rename()
+            else:
+                self.on.say(r.message, BAD)
+        self.on.request("POST", "/api/categories/rename", {"id": cid, "name": name}, then=done)
 
     def poll(self) -> None:
         """Search as you type (a moment after the last key), and finish choosing a picture."""
@@ -318,6 +356,9 @@ class Hub:
             return True
         if ev.key == pygame.K_ESCAPE and self.viewing:
             self.viewing = None
+            return True
+        if ev.key == pygame.K_ESCAPE and self.renaming:
+            self.cancel_rename()
             return True
         if ev.key in (pygame.K_UP, pygame.K_DOWN):
             self.wheel(1 if ev.key == pygame.K_UP else -1)
@@ -845,15 +886,28 @@ class Hub:
                       "No community categories yet. Make one with the Speedrun checkbox in the menu and share it!",
                       ph * 0.026, MUTED, topleft=(x, y))
             return
-        rh = int(row * 1.55)
-        fits = max(1, int((bottom - y) // (rh + 6)))
+        rh = max(64, int(row * 2.0))
+        fits = max(1, int((bottom - y) // (rh + 8)))
         self.scroll = min(self.scroll, max(0, len(self.community) - fits))
         saved = {c.id for c in self.app.custom_cats}
         for c in self.community[self.scroll:self.scroll + fits]:
             r = pygame.Rect(x, y, w, rh)
             pygame.draw.rect(self.app.screen, CARD, r, border_radius=8)
-            name = self.text(c["name"], rh * 0.3, INK, topleft=(r.x + 12, r.y + rh * 0.1))
-            self.text(f"by {c['creator']}", rh * 0.24, ACCENT, midleft=(name.right + 10, name.centery))
+            bw = int(w * 0.11)
+            mine = self.on.logged_in and c["creator"].lower() == self.on.user.lower()
+            if c["id"] == self.renaming:
+                fr = pygame.Rect(r.x + 8, r.y + 8, int(w * 0.4), int(rh * 0.44))
+                self.on._field("rename", fr)
+                self.button(pygame.Rect(fr.right + 8, fr.y, int(w * 0.1), fr.h), "Save", self.save_rename, True)
+                self.button(pygame.Rect(fr.right + 16 + int(w * 0.1), fr.y, int(w * 0.1), fr.h), "Cancel",
+                            self.cancel_rename)
+            else:
+                name = self.text(c["name"], rh * 0.32, INK, topleft=(r.x + 14, r.y + rh * 0.12))
+                by = self.text(f"by {c['creator']}" + ("  (you)" if mine else ""), rh * 0.24, ACCENT,
+                               midleft=(name.right + 12, name.centery))
+                if mine:
+                    self.button(pygame.Rect(by.right + 14, name.centery - rh * 0.23, int(w * 0.12), int(rh * 0.46)),
+                                "Rename", lambda e=c: self.start_rename(e))
             try:
                 rules = describe({**c["def"], "goal": c["def"].get("goal")})
             except (KeyError, TypeError, ValueError):
@@ -861,14 +915,13 @@ class Hub:
             wr = c.get("wr")
             sub = rules + (f"   WR {format_time(wr['time_ms'])} by {wr['player']}" if wr else "   No runs yet") + \
                 f"   ·   {c['players']} player{'s' if c['players'] != 1 else ''}"
-            self.text(sub, rh * 0.22, MUTED, bottomleft=(r.x + 12, r.bottom - rh * 0.12))
-            bw = int(w * 0.11)
-            self.button(pygame.Rect(r.right - bw - 8, r.y + 8, bw, rh - 16), "Play",
+            self.text(sub, rh * 0.22, MUTED, bottomleft=(r.x + 14, r.bottom - rh * 0.14))
+            self.button(pygame.Rect(r.right - bw - 10, r.y + rh * 0.2, bw, rh * 0.6), "Play",
                         lambda e=c: self.save_category(e, True), True, not self.on.mods_on)
             done = c["id"] in saved
-            self.button(pygame.Rect(r.right - 2 * bw - 16, r.y + 8, bw, rh - 16), "Saved" if done else "Save",
+            self.button(pygame.Rect(r.right - 2 * bw - 20, r.y + rh * 0.2, bw, rh * 0.6), "Saved" if done else "Save",
                         lambda e=c: self.save_category(e, False), False, not done)
-            y += rh + 6
+            y += rh + 8
         if len(self.community) > fits:
             self.text(f"{self.scroll + 1}-{self.scroll + fits} of {len(self.community)} (scroll for more)",
                       ph * 0.022, MUTED, topleft=(x, y))
