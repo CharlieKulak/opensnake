@@ -43,7 +43,30 @@ window.osnet = window.osnet || {
   status(id) { const s = osnet.sockets[id]; return s ? s.state : 'closed'; },
   close(id) { const s = osnet.sockets[id]; if (s) { try { s.ws.close(); } catch (e) {} delete osnet.sockets[id]; } },
   get(k) { return localStorage.getItem(k) || ''; },
-  set(k, v) { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); }
+  set(k, v) { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); },
+  // Choose an image file; it comes back as a square PNG (base64) of size x size, cropped to the middle.
+  pick(size) {
+    osnet.picked = {state: 'picking', data: ''};
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = 'image/*';
+    input.onchange = () => {
+      const file = input.files[0];
+      if (!file) { osnet.picked.state = 'cancel'; return; }
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas'); c.width = c.height = size;
+        const side = Math.min(img.width, img.height);
+        c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+        osnet.picked = {state: 'done', data: c.toDataURL('image/png').split(',')[1]};
+        URL.revokeObjectURL(img.src);
+      };
+      img.onerror = () => { osnet.picked.state = 'error'; };
+      img.src = URL.createObjectURL(file);
+    };
+    input.oncancel = () => { osnet.picked.state = 'cancel'; };
+    input.click();
+  },
+  pickState() { return JSON.stringify(osnet.picked || {state: 'idle', data: ''}); }
 };
 """
 
@@ -218,6 +241,103 @@ class Socket:
             except Exception:
                 pass
         self.state = "closed"
+
+
+# ---- profile pictures ---------------------------------------------------------------------
+
+PICTURE_SIZE = 128
+
+
+def square_png(surface) -> str:
+    """The middle square of an image, as a PICTURE_SIZE PNG in base64."""
+    import base64
+    import io
+
+    import pygame
+    w, h = surface.get_size()
+    side = min(w, h)
+    square = surface.subsurface(((w - side) // 2, (h - side) // 2, side, side))
+    small = pygame.transform.smoothscale(square.convert_alpha() if pygame.display.get_surface() else square,
+                                         (PICTURE_SIZE, PICTURE_SIZE))
+    buf = io.BytesIO()
+    pygame.image.save(small, buf, "picture.png")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def load_picture(path: str) -> str:
+    """An image file as a square PNG (base64); raises ValueError if it can't be read."""
+    import pygame
+    try:
+        return square_png(pygame.image.load(path.strip().strip('"')))
+    except (pygame.error, OSError, FileNotFoundError) as e:
+        raise ValueError(f"Couldn't open that image: {e}") from None
+
+
+def _file_dialog() -> str | None:
+    """Ask for an image file with the system's dialog: the path, "" if cancelled, None if there's no dialog."""
+    import shutil
+    import subprocess
+    title = "Choose a profile picture"
+    commands = []
+    if sys.platform == "darwin":
+        commands.append(["osascript", "-e", f'POSIX path of (choose file of type {{"public.image"}} '
+                                            f'with prompt "{title}")'])
+    elif sys.platform.startswith("linux"):
+        commands.append(["zenity", "--file-selection", f"--title={title}",
+                         "--file-filter=Images | *.png *.jpg *.jpeg *.gif *.bmp *.webp"])
+        commands.append(["kdialog", "--title", title, "--getopenfilename", ".", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"])
+    for cmd in commands:
+        if shutil.which(cmd[0]):
+            try:
+                out = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            return out.stdout.strip() if out.returncode == 0 else ""
+    try:
+        import tkinter
+        from tkinter import filedialog
+        root = tkinter.Tk()
+        root.withdraw()
+        path = filedialog.askopenfilename(
+            title=title, filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"), ("All files", "*.*")])
+        root.destroy()
+        return path or ""
+    except Exception:  # no tkinter (ImportError), or no display for it (TclError)
+        return None
+
+
+class ImagePicker:
+    """Choose an image for a profile picture without freezing the game for long.
+
+    ``state``: picking / done / cancel / error / no-dialog (the desktop has no file
+    dialog available: type a path instead). ``data`` is the PNG in base64 when done.
+    """
+
+    def __init__(self):
+        self.state, self.data, self.error = "picking", "", ""
+        if WEB:
+            _js(f"osnet.pick({PICTURE_SIZE})")
+            return
+        path = _file_dialog()  # (a short, modal dialog: fine to wait for)
+        if path is None:
+            self.state = "no-dialog"
+            return
+        if not path:
+            self.state = "cancel"
+            return
+        try:
+            self.data, self.state = load_picture(path), "done"
+        except ValueError as e:
+            self.state, self.error = "error", str(e)
+
+    def poll(self) -> bool:
+        """True once the choice is over (whatever the outcome)."""
+        if WEB and self.state == "picking":
+            got = json.loads(_js("osnet.pickState()"))
+            self.state, self.data = got.get("state", "picking"), got.get("data", "")
+            if self.state == "error":
+                self.error = "The browser couldn't read that image."
+        return self.state != "picking"
 
 
 def ws_url(base: str, path: str = "/ws") -> str:

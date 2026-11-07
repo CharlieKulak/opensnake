@@ -184,10 +184,11 @@ Everything is in one SQLite file, `web-support/data/opensnake.db`:
 
 - accounts (usernames and salted, hashed passwords), login sessions
 - every verified speedrun run, used for the leaderboards and world records
-- profiles, snake points (with a ledger of every change), owned skins and
-  packs, friends, ranks and shared community categories
+- profiles (including uploaded profile pictures, small PNGs), snake points
+  (with a ledger of every change), owned skins and packs, friends, ranks and
+  shared community categories
 
-Updating from 1.1 adds the new tables and columns to an existing file
+Updating from 1.x adds the new tables and columns to an existing file
 automatically, keeping everyone's accounts and records.
 
 Back up that file to keep your players' accounts and records. Delete it (with

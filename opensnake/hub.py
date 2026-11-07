@@ -6,6 +6,8 @@ object (requests, the login and its drawing helpers).
 
 from __future__ import annotations
 
+import base64
+import io
 import math
 import random
 import urllib.parse
@@ -13,6 +15,7 @@ import urllib.parse
 import pygame
 
 from . import cosmetics as cos
+from .net import ImagePicker, load_picture
 from .speedrun import category_from_def, describe, format_time
 
 WHITE = (255, 255, 255)
@@ -53,6 +56,9 @@ class Hub:
         self.scroll = 0
         self.opening: dict | None = None   # the loot box being opened
         self.busy = False
+        self.pictures: dict = {}           # player name -> [version, image or None while loading]
+        self.picker: ImagePicker | None = None
+        self.typing_path = False           # no file dialog here: type the picture's path instead
 
     @property
     def app(self):
@@ -61,7 +67,8 @@ class Hub:
     # ---- data ----------------------------------------------------------------------------
 
     def fields_for(self, tab: str) -> list[str]:
-        return {"profile": ["bio"] if not self.viewing else [], "friends": ["users"],
+        return {"profile": ([] if self.viewing else ["bio"] + (["picture_path"] if self.typing_path else [])),
+                "friends": ["users"],
                 "community": ["community"]}.get(tab, [])
 
     def open_tab(self, tab: str) -> None:
@@ -115,7 +122,17 @@ class Hub:
         self.on.request("GET", "/api/categories?" + urllib.parse.urlencode({"q": query}), then=done, auth=False)
 
     def poll(self) -> None:
-        """Search as you type (a moment after the last key)."""
+        """Search as you type (a moment after the last key), and finish choosing a picture."""
+        if self.picker and self.picker.poll():
+            picker, self.picker = self.picker, None
+            if picker.state == "done":
+                self.upload_picture(picker.data)
+            elif picker.state == "no-dialog":
+                self.typing_path = True
+                self.on.focus = "picture_path"
+                self.on.say("Type or paste the path to an image file, then press Enter.", MUTED)
+            elif picker.state == "error":
+                self.on.say(picker.error, BAD)
         now = pygame.time.get_ticks()
         if self.on.tab == "friends" and self.on.fields["users"].value.strip() != self.users_query \
                 and now - self.users_at > 300:
@@ -150,6 +167,51 @@ class Hub:
         """Host a match and invite a friend to it."""
         self.on.invite_after_host = name
         self.on.host()
+
+    # -- your own picture
+
+    def choose_picture(self) -> None:
+        self.on.say("Choose an image...", MUTED)
+        self.picker = ImagePicker()
+
+    def picture_from_path(self) -> None:
+        try:
+            data = load_picture(self.on.fields["picture_path"].value)
+        except ValueError as e:
+            self.on.say(str(e), BAD)
+            return
+        self.typing_path = False
+        self.on.fields["picture_path"].value = ""
+        self.upload_picture(data)
+
+    def upload_picture(self, data: str) -> None:
+        def done(r):
+            if r.ok:
+                self.on.set_me(r.data)
+                self.pictures.pop(self.on.user.lower(), None)  # show the new one
+                self.on.say("Picture saved.", GOOD)
+            else:
+                self.on.say(r.message, BAD)
+        self.on.say("Uploading...", MUTED)
+        self.on.request("POST", "/api/profile/picture", {"png": data}, then=done)
+
+    def picture(self, name: str, version: str):
+        """A player's own picture (downloaded once per version), or None while it loads."""
+        key = name.lower()
+        entry = self.pictures.get(key)
+        if entry and entry[0] == version:
+            return entry[1]
+        self.pictures[key] = [version, None]
+
+        def done(r):
+            if r.ok and self.pictures.get(key, [None])[0] == version:
+                try:
+                    img = pygame.image.load(io.BytesIO(base64.b64decode(r.data["png"])), "picture.png")
+                    self.pictures[key][1] = img.convert_alpha() if pygame.display.get_surface() else img
+                except (pygame.error, KeyError, ValueError):
+                    pass
+        self.on.request("GET", f"/api/pictures/{urllib.parse.quote(name)}?v={version}", then=done, auth=False)
+        return None
 
     def save_profile(self, **changes) -> None:
         def done(r):
@@ -270,9 +332,21 @@ class Hub:
     def button(self, *args, **kw):
         return self.on._button(*args, **kw)
 
-    def avatar(self, center, radius, value) -> None:
-        icon, ci = cos.parse_avatar(value)
+    def avatar(self, center, radius, value, name: str = "") -> None:
         scr = self.app.screen
+        version = cos.custom_picture(value)
+        if version and name:
+            img = self.picture(name, version)
+            pygame.draw.circle(scr, (220, 224, 216), center, radius)
+            if img:
+                d = max(2, int(radius * 2))
+                round_img = pygame.transform.smoothscale(img, (d, d))
+                mask = pygame.Surface((d, d), pygame.SRCALPHA)
+                pygame.draw.circle(mask, (255, 255, 255, 255), (d / 2, d / 2), d / 2)
+                round_img.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+                scr.blit(round_img, round_img.get_rect(center=center))
+            return
+        icon, ci = cos.parse_avatar(value)
         pygame.draw.circle(scr, cos.AVATAR_COLORS[ci], center, radius)
         img = self.app.renderer.sprites.image(icon, int(radius * 1.25))
         if img:
@@ -393,7 +467,7 @@ class Hub:
             return
         mine = self.viewing is None or prof.get("name", "").lower() == self.on.user.lower()
         r = int(ph * 0.075)
-        self.avatar((x + r, top + r + 6), r, prof.get("avatar"))
+        self.avatar((x + r, top + r + 6), r, prof.get("avatar"), prof.get("name", ""))
         tx = x + 2 * r + 24
         name = self.text(prof.get("name", ""), ph * 0.05, INK, topleft=(tx, top + 2))
         rp = prof.get("rp", 0)
@@ -456,14 +530,25 @@ class Hub:
         y += row + ph * 0.03
         # picture
         icon, ci = cos.parse_avatar(prof.get("avatar"))
-        self.text("Profile picture", ph * 0.03, INK, topleft=(x, y))
+        own = cos.custom_picture(prof.get("avatar"))
+        head = self.text("Profile picture", ph * 0.03, INK, topleft=(x, y))
+        ub = pygame.Rect(head.right + 20, head.centery - row * 0.42, int(w * 0.22), int(row * 0.84))
+        self.button(ub, "Upload picture...", self.choose_picture, True, self.picker is None)
+        note = "Using your own picture. Pick an icon below to switch back." if own else \
+            "Any image: it's cropped to a square. Or pick an icon and a colour:"
+        self.text(note, ph * 0.022, MUTED, midleft=(ub.right + 14, ub.centery))
+        if self.typing_path:
+            y += ph * 0.05
+            self.on._field("picture_path", pygame.Rect(x, y, int(w * 0.8), row))
+            self.button(pygame.Rect(x + int(w * 0.82), y, int(w * 0.18), row), "Use", self.picture_from_path, True)
+            y += row - ph * 0.005
         y += ph * 0.045
         n = len(cos.AVATAR_ICONS)
         cell = min(int(ph * 0.06), (w - 6 * (n - 1)) // n)
         for i, name_ in enumerate(cos.AVATAR_ICONS):
             c = (x + cell // 2 + i * (cell + 6), y + cell // 2)
             self.avatar(c, cell // 2, f"{name_}:{ci}")
-            if name_ == icon:
+            if name_ == icon and not own:
                 pygame.draw.circle(self.app.screen, (255, 170, 0), c, cell // 2 + 3, 3)
             self.on.hits.append((pygame.Rect(c[0] - cell // 2, c[1] - cell // 2, cell, cell),
                                  lambda v=f"{name_}:{ci}": self.save_profile(avatar=v)))
@@ -471,7 +556,7 @@ class Hub:
         for i, col in enumerate(cos.AVATAR_COLORS):
             c = (x + cell // 2 + i * (cell + 6), y + cell // 3)
             pygame.draw.circle(self.app.screen, col, c, cell // 3)
-            if i == ci:
+            if i == ci and not own:
                 pygame.draw.circle(self.app.screen, (255, 170, 0), c, cell // 3 + 3, 3)
             self.on.hits.append((pygame.Rect(c[0] - cell // 3, c[1] - cell // 3, 2 * cell // 3, 2 * cell // 3),
                                  lambda v=f"{icon}:{i}": self.save_profile(avatar=v)))
@@ -490,7 +575,7 @@ class Hub:
         scr = self.app.screen
         pygame.draw.rect(scr, CARD, rect, border_radius=8)
         r = rect.h * 0.36
-        self.avatar((rect.x + 8 + r, rect.centery), r, person.get("avatar"))
+        self.avatar((rect.x + 8 + r, rect.centery), r, person.get("avatar"), person["name"])
         nx = rect.x + 16 + 2 * r
         self.dot((nx + 4, rect.centery), person.get("online"))
         name = self.text(person["name"], rect.h * 0.42, INK, midleft=(nx + 14, rect.centery))

@@ -81,6 +81,7 @@ class Online:
             "bio": Field("Write something about yourself", max_len=160),
             "users": Field("Search players by username", max_len=20, allowed=ok_name),
             "community": Field("Search by name or creator", max_len=40),
+            "picture_path": Field("Path to an image, e.g. /home/me/Pictures/me.png", max_len=400),
         }
         self.tab = "play"            # Online screen tab: play / profile / friends / store / community
         self.me: dict | None = None  # your profile, points and items on this server
@@ -662,6 +663,8 @@ class Online:
             self.hub.search_users()
         elif self.focus == "community":
             self.hub.load_community()
+        elif self.focus == "picture_path":
+            self.hub.picture_from_path()
 
     def _my_snake(self):
         g = self.game

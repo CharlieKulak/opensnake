@@ -316,8 +316,11 @@ press **Join** (or **J**) to come straight to your match.
 The Online screen's other tabs (keys **1**-**5**) need an account:
 
 **Profile.** Your rank, wins and losses, world records held and snake points.
-Write a bio (up to 160 characters) and pick a profile picture (an icon and a
-colour). Click any player's name, in Friends or search results, to see their
+Write a bio (up to 160 characters) and set a profile picture: **Upload
+picture...** uses any image of your own (it's cropped to a square), or pick
+one of the icons and a colour. On the desktop the picture is chosen with your
+system's file dialog (or by typing its path if there isn't one); in the
+browser, with the browser's. Click any player's name, in Friends or search results, to see their
 profile.
 
 **Friends.** Search players by username and send friend requests; they

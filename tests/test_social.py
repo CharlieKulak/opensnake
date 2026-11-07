@@ -214,3 +214,38 @@ class BotAndInviteTests(ServerTestCase):
         self.assertEqual((invite["from"], invite["code"]), ("alice", room["code"]))
         for ws in (wa, wb):
             await ws.close()
+
+
+class PictureTests(ServerTestCase):
+    @staticmethod
+    def png(w, h, extra=b""):
+        return (b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + w.to_bytes(4, "big") + h.to_bytes(4, "big")
+                + b"\x08\x06\x00\x00\x00" + extra)
+
+    async def test_own_pictures(self):
+        import base64
+        token = await self.account()
+        pic = self.png(128, 128, b"pixels")
+        status, me = await self.post("/api/profile/picture", {"png": base64.b64encode(pic).decode()}, token)
+        self.assertEqual(status, 200, me)
+        version = cos.custom_picture(me["avatar"])
+        self.assertTrue(version)
+        status, got = await self.get("/api/pictures/ALICE")
+        self.assertEqual((status, got["version"], base64.b64decode(got["png"])), (200, version, pic))
+        self.assertEqual((await self.get("/api/users?q=alice"))[1]["users"][0]["avatar"], me["avatar"])
+        # back to an icon; the picture stays stored for next time
+        self.assertEqual((await self.post("/api/profile", {"avatar": "skull:2"}, token))[1]["avatar"], "skull:2")
+        self.assertEqual((await self.get("/api/pictures/alice"))[0], 200)
+
+    async def test_bad_pictures(self):
+        import base64
+        token = await self.account()
+        for data, why in ((base64.b64encode(b"GIF89a....").decode(), "PNG"),
+                          ("not base64!", "PNG"),
+                          (base64.b64encode(self.png(2000, 10)).decode(), "512"),
+                          (base64.b64encode(self.png(64, 64, b"x" * 300_000)).decode(), "too big")):
+            status, res = await self.post("/api/profile/picture", {"png": data}, token)
+            self.assertEqual(status, 400)
+            self.assertIn(why, res["error"])
+        self.assertEqual((await self.post("/api/profile/picture", {"png": ""})) [0], 401)
+        self.assertEqual((await self.get("/api/pictures/alice"))[0], 404)

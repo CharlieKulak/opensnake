@@ -311,6 +311,13 @@ AVATAR_ICONS = ["opensnake", "fruit_apple", "fruit_orange", "fruit_cherry", "fru
 AVATAR_COLORS = [(61, 111, 232), (232, 112, 26), (40, 160, 70), (210, 60, 50), (138, 63, 224),
                  (19, 154, 143), (224, 69, 123), (38, 42, 51)]
 DEFAULT_AVATAR = "opensnake:0"
+CUSTOM_AVATAR = "custom"  # "custom:<version>": the player's own uploaded picture
+
+
+def custom_picture(value) -> str | None:
+    """The version of a player's own picture if their avatar is one, else None."""
+    kind, _, version = str(value or "").partition(":")
+    return version if kind == CUSTOM_AVATAR and version else None
 
 
 def parse_avatar(value) -> tuple[str, int]:

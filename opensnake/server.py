@@ -13,6 +13,8 @@ HTTP API (JSON):
     POST /api/logout    (Authorization: Bearer)  -> {}
     GET  /api/me        (Authorization: Bearer)  -> your profile, points, rank and items
     POST /api/profile   {bio?, avatar?, skin?}   -> your profile
+    POST /api/profile/picture  {png} (base64)    -> your profile, with your own picture as the avatar
+    GET  /api/pictures/{name}                    -> {png, version}: a player's own picture
     GET  /api/users?q=                           -> {users: [...]}            (search by name)
     GET  /api/users/{name}                       -> a player's profile
     GET  /api/friends                            -> {friends, incoming, outgoing}
@@ -34,6 +36,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -72,6 +76,9 @@ MAX_MATCH_NAME = 32
 MAX_LISTED = 50  # public matches returned per search
 MAX_BIO = 160
 ROUND_GAP = 2.0  # seconds between paid single-player rounds (one account can't farm faster)
+MAX_PICTURE_BYTES = 256 * 1024
+MAX_PICTURE_SIDE = 512
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def clean_match_name(name) -> str:
@@ -115,11 +122,13 @@ class Database:
                 created TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS wr_hold (
                 category TEXT PRIMARY KEY, user_id INTEGER NOT NULL, since TEXT NOT NULL, paid INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS pictures (
+                user_id INTEGER PRIMARY KEY, png BLOB NOT NULL, version TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS ledger (
                 id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, amount INTEGER NOT NULL, reason TEXT NOT NULL,
                 created TEXT NOT NULL);
         """)
-        # Profile, points and rank columns (added in 1.2): add them to the users table if it's older.
+        # Profile, points and rank columns (added in 2.0): add them to the users table if it's older.
         have = {r[1] for r in self.db.execute("PRAGMA table_info(users)")}
         for column, decl in (("points", "INTEGER NOT NULL DEFAULT 0"), ("bio", "TEXT NOT NULL DEFAULT ''"),
                              ("avatar", "TEXT NOT NULL DEFAULT ''"), ("skin", "TEXT NOT NULL DEFAULT ''"),
@@ -274,6 +283,24 @@ class Database:
                 raise ValueError("You don't own that skin.")
             self.db.execute("UPDATE users SET skin = ? WHERE id = ?", (skin, user_id))
         self.db.commit()
+
+    def set_picture(self, user_id: int, png: bytes) -> str:
+        """Store a player's own profile picture (a small PNG) and make it their avatar."""
+        if not png.startswith(PNG_SIGNATURE) or png[12:16] != b"IHDR":
+            raise ValueError("The picture must be a PNG image.")
+        if len(png) > MAX_PICTURE_BYTES:
+            raise ValueError("That picture is too big (256 KB at most).")
+        w, h = int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
+        if not (1 <= w <= MAX_PICTURE_SIDE and 1 <= h <= MAX_PICTURE_SIDE):
+            raise ValueError(f"The picture can be at most {MAX_PICTURE_SIDE} x {MAX_PICTURE_SIDE} pixels.")
+        version = hashlib.sha1(png).hexdigest()[:10]
+        self.db.execute("INSERT OR REPLACE INTO pictures VALUES (?, ?, ?)", (user_id, png, version))
+        self.db.execute("UPDATE users SET avatar = ? WHERE id = ?", (f"{cos.CUSTOM_AVATAR}:{version}", user_id))
+        self.db.commit()
+        return version
+
+    def picture(self, user_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT png, version FROM pictures WHERE user_id = ?", (user_id,)).fetchone()
 
     def search_users(self, query: str, limit: int = 20) -> list[sqlite3.Row]:
         q = "%" + query.replace("\\", "").replace("%", "").replace("_", "\\_") + "%"
@@ -655,6 +682,8 @@ class Server:
         r.add_post("/api/runs", self.submit_run)
         r.add_get("/api/matches", self.matches)
         r.add_post("/api/profile", self.set_profile)
+        r.add_post("/api/profile/picture", self.set_picture)
+        r.add_get("/api/pictures/{name}", self.get_picture)
         r.add_get("/api/users", self.search_users)
         r.add_get("/api/users/{name}", self.user_profile)
         r.add_get("/api/friends", self.friends)
@@ -748,6 +777,28 @@ class Server:
         except ValueError as e:
             return self.error(str(e))
         return web.json_response(self.db.profile(self.db.user_by_id(user["id"]), True))
+
+    async def set_picture(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to change your picture.", 401)
+        try:
+            png = base64.b64decode(str((await self.body(request)).get("png", "")), validate=True)
+        except binascii.Error:
+            return self.error("The picture must be a PNG image.")
+        try:
+            self.db.set_picture(user["id"], png)
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response(self.db.profile(self.db.user_by_id(user["id"]), True))
+
+    async def get_picture(self, request: web.Request) -> web.Response:
+        row = self.db.user_row(request.match_info["name"])
+        pic = self.db.picture(row["id"]) if row else None
+        if not pic:
+            return self.error("No picture.", 404)
+        return web.json_response({"png": base64.b64encode(pic["png"]).decode(), "version": pic["version"]},
+                                 headers={"Cache-Control": "max-age=3600"})
 
     async def search_users(self, request: web.Request) -> web.Response:
         query = request.query.get("q", "").strip()[:20]
