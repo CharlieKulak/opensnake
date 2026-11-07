@@ -26,6 +26,9 @@ HTTP API (JSON):
     GET  /api/categories?q=                      -> community custom speedrun categories
     POST /api/categories      {def}              -> share a custom category
     POST /api/categories/rename  {id, name}      -> rename a category you made
+    GET  /api/messages                           -> {chats: [{name, last, unread}], unread}
+    GET  /api/messages/{name}?before=id          -> {messages: [...]} with a friend (marks them read)
+    POST /api/messages        {to, body}         -> send a friend a message (also pushed live as "dm")
     GET  /api/info                               -> {server, version, site}
     GET  /api/records                            -> {records: {category: {time_ms, player, date}}}
     GET  /api/leaderboard/{category}             -> {entries: [{player, time_ms, date}]}
@@ -77,6 +80,8 @@ MAX_MATCH_NAME = 32
 MAX_LISTED = 50  # public matches returned per search
 MAX_BIO = 160
 MAX_CATEGORY_NAME = 40
+MAX_MESSAGE = 500
+MESSAGE_GAP = 0.3   # seconds between messages from one account (no flooding)
 ROUND_GAP = 2.0  # seconds between paid single-player rounds (one account can't farm faster)
 MAX_PICTURE_BYTES = 256 * 1024
 MAX_PICTURE_SIDE = 512
@@ -124,6 +129,10 @@ class Database:
                 created TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS wr_hold (
                 category TEXT PRIMARY KEY, user_id INTEGER NOT NULL, since TEXT NOT NULL, paid INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY, sender INTEGER NOT NULL, recipient INTEGER NOT NULL, body TEXT NOT NULL,
+                created TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0);
+            CREATE INDEX IF NOT EXISTS messages_pair ON messages(sender, recipient, id);
             CREATE TABLE IF NOT EXISTS pictures (
                 user_id INTEGER PRIMARY KEY, png BLOB NOT NULL, version TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS ledger (
@@ -383,6 +392,44 @@ class Database:
             key = "friends" if r["accepted"] else ("outgoing" if r["a"] == me else "incoming")
             out[key].append(other)
         return out
+
+    # -- messages
+
+    def send_message(self, sender: int, recipient: int, body) -> dict:
+        if self.friendship(sender, recipient) != "friends":
+            raise PermissionError("You can only message your friends.")
+        text = "".join(ch for ch in str(body or "") if ch.isprintable()).strip()[:MAX_MESSAGE]
+        if not text:
+            raise ValueError("Type a message.")
+        cur = self.db.execute("INSERT INTO messages (sender, recipient, body, created) VALUES (?, ?, ?, ?)",
+                              (sender, recipient, text, now_iso()))
+        self.db.commit()
+        return self.message(cur.lastrowid)
+
+    def message(self, message_id: int) -> dict:
+        r = self.db.execute("""SELECT messages.*, s.name AS sender_name, t.name AS recipient_name FROM messages
+                               JOIN users s ON s.id = messages.sender JOIN users t ON t.id = messages.recipient
+                               WHERE messages.id = ?""", (message_id,)).fetchone()
+        return {"id": r["id"], "from": r["sender_name"], "to": r["recipient_name"], "body": r["body"],
+                "created": r["created"], "read": bool(r["read"])}
+
+    def conversation(self, me: int, other: int, before: int | None = None, limit: int = 50) -> list[dict]:
+        """The latest messages between two players (oldest first), and mark theirs to me as read."""
+        rows = self.db.execute("""SELECT id FROM messages WHERE ((sender = ? AND recipient = ?) OR (sender = ? AND
+                                  recipient = ?)) AND id < ? ORDER BY id DESC LIMIT ?""",
+                               (me, other, other, me, before or 1 << 62, limit)).fetchall()
+        self.db.execute("UPDATE messages SET read = 1 WHERE sender = ? AND recipient = ? AND read = 0", (other, me))
+        self.db.commit()
+        return [self.message(r["id"]) for r in reversed(rows)]
+
+    def chats(self, me: int) -> list[dict]:
+        """Everyone you've messaged with: the last message and how many of theirs you haven't read."""
+        rows = self.db.execute("""
+            SELECT CASE WHEN sender = ? THEN recipient ELSE sender END AS other, MAX(id) AS last,
+                   SUM(CASE WHEN recipient = ? AND read = 0 THEN 1 ELSE 0 END) AS unread
+            FROM messages WHERE sender = ? OR recipient = ? GROUP BY other ORDER BY last DESC""",
+                               (me, me, me, me)).fetchall()
+        return [{"user": r["other"], "last": self.message(r["last"]), "unread": r["unread"]} for r in rows]
 
     # -- versus results
 
@@ -656,6 +703,7 @@ class Server:
         self.next_pid = 1
         self.connected: dict[int, set[Player]] = {}  # account id -> its open connections (who's online)
         self.last_round: dict[int, float] = {}       # account id -> when its last round was paid
+        self.last_message: dict[int, float] = {}     # account id -> when it last sent a message
         self.settle_task: asyncio.Task | None = None
 
     def new_pid(self) -> int:
@@ -713,6 +761,9 @@ class Server:
         r.add_get("/api/categories", self.categories)
         r.add_post("/api/categories", self.share_category)
         r.add_post("/api/categories/rename", self.rename_category)
+        r.add_get("/api/messages", self.chats)
+        r.add_get("/api/messages/{name}", self.conversation)
+        r.add_post("/api/messages", self.send_message)
         r.add_get("/ws", self.websocket)
         if self.web_dir:
             r.add_get("/", self.index)
@@ -922,6 +973,53 @@ class Server:
     # -- community categories
     async def categories(self, request: web.Request) -> web.Response:
         return web.json_response({"categories": self.db.community(request.query.get("q", "").strip()[:40])})
+
+    # -- messages
+    async def chats(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to see your messages.", 401)
+        chats = []
+        for c in self.db.chats(user["id"]):
+            row = self.db.user_by_id(c["user"])
+            chats.append({**self.summary(row), "last": c["last"], "unread": c["unread"]})
+        return web.json_response({"chats": chats, "unread": sum(c["unread"] for c in chats)})
+
+    async def conversation(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to see your messages.", 401)
+        other = self.db.user_row(request.match_info["name"])
+        if not other:
+            return self.error("No player with that name.", 404)
+        try:
+            before = int(request.query["before"]) if "before" in request.query else None
+        except ValueError:
+            before = None
+        return web.json_response({"messages": self.db.conversation(user["id"], other["id"], before)})
+
+    async def send_message(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to send messages.", 401)
+        data = await self.body(request)
+        other = self.db.user_row(str(data.get("to", "")))
+        if not other:
+            return self.error("No player with that name.", 404)
+        now = asyncio.get_running_loop().time()
+        if now - self.last_message.get(user["id"], -1e9) < MESSAGE_GAP:
+            return self.error("Slow down a little.", 429)
+        try:
+            msg = self.db.send_message(user["id"], other["id"], data.get("body"))
+        except PermissionError as e:
+            return self.error(str(e), 403)
+        except ValueError as e:
+            return self.error(str(e))
+        self.last_message[user["id"]] = now
+        live = {"t": "dm", **msg}
+        await self.notify(other["id"], live)
+        await self.notify(user["id"], live)  # your other windows see it too
+        return web.json_response(msg)
 
     async def rename_category(self, request: web.Request) -> web.Response:
         user = self.db.user_for(self.token(request))

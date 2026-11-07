@@ -15,9 +15,12 @@ from opensnake.speedrun import CATEGORY_BY_ID, make_custom  # noqa: E402
 
 
 class CatalogueTests(ServerTestCase):
-    def test_fifty_skins_with_the_rarest_only_in_loot_boxes(self):
-        self.assertEqual(len(cos.SKINS), 50)
-        self.assertEqual(len({s.id for s in cos.SKINS}), 50)
+    def test_seventy_skins_with_the_rarest_only_in_loot_boxes(self):
+        self.assertEqual(len(cos.SKINS), 70)
+        self.assertEqual(len({s.id for s in cos.SKINS}), 70)
+        stands = [s for s in cos.SKINS if s.series == "Stand"]
+        self.assertEqual(len(stands), 20)
+        self.assertTrue(all(not s.shop for s in stands))
         for s in cos.SKINS:
             self.assertIn(s.rarity, cos.RARITIES)
             if s.rarity in ("epic", "legendary", "mythic"):
@@ -271,3 +274,54 @@ class RenameCategoryTests(ServerTestCase):
         # someone else running it later doesn't change its name back
         await self.post("/api/runs", bot_run(cat, 5, random.Random(4)).to_json(), bob)
         self.assertEqual((await self.get("/api/categories"))[1]["categories"][0]["name"], long)
+
+
+class MessageTests(ServerTestCase):
+    recv = VersusTests.recv
+
+    async def friends(self):
+        a, b = await self.account("alice"), await self.account("bobby")
+        await self.post("/api/friends/add", {"name": "bobby"}, a)
+        await self.post("/api/friends/add", {"name": "alice"}, b)
+        return a, b
+
+    async def test_friends_only_and_limits(self):
+        a = await self.account("alice")
+        await self.account("bobby")
+        status, res = await self.post("/api/messages", {"to": "bobby", "body": "hi"}, a)
+        self.assertEqual(status, 403)
+        self.assertIn("friends", res["error"])
+        self.assertEqual((await self.post("/api/messages", {"to": "nobody", "body": "hi"}, a))[0], 404)
+        self.assertEqual((await self.post("/api/messages", {"to": "bobby", "body": "hi"}))[0], 401)
+        b = await self.account("carol")
+        await self.post("/api/friends/add", {"name": "carol"}, a)
+        await self.post("/api/friends/add", {"name": "alice"}, b)
+        self.assertEqual((await self.post("/api/messages", {"to": "carol", "body": " \n\x00 "}, a))[0], 400)
+        sent = (await self.post("/api/messages", {"to": "carol", "body": "x" * 900}, a))[1]
+        self.assertEqual(len(sent["body"]), 500)
+        self.assertEqual((await self.post("/api/messages", {"to": "carol", "body": "again"}, a))[0], 429)  # too fast
+
+    async def test_chat_unread_live_and_history(self):
+        a, b = await self.friends()
+        wb = await self.client.ws_connect(f"/ws?token={b}")
+        await self.recv(wb, "welcome")
+        await wb.send_json({"t": "hello"})
+        self.server.last_message.clear()
+        sent = (await self.post("/api/messages", {"to": "bobby", "body": "hey bob"}, a))[1]
+        live = await self.recv(wb, "dm")
+        self.assertEqual((live["from"], live["to"], live["body"], live["id"]), ("alice", "bobby", "hey bob", sent["id"]))
+        chats = (await self.get("/api/messages", b))[1]
+        self.assertEqual((chats["unread"], chats["chats"][0]["name"], chats["chats"][0]["last"]["body"]),
+                         (1, "alice", "hey bob"))
+        msgs = (await self.get("/api/messages/alice", b))[1]["messages"]
+        self.assertEqual([m["body"] for m in msgs], ["hey bob"])
+        self.assertEqual((await self.get("/api/messages", b))[1]["unread"], 0)  # reading clears it
+        for i in range(60):  # a long chat: pages of 50, oldest first
+            self.server.last_message.clear()
+            await self.post("/api/messages", {"to": "alice", "body": f"msg {i}"}, b)
+        page = (await self.get("/api/messages/bobby", a))[1]["messages"]
+        self.assertEqual((len(page), page[-1]["body"]), (50, "msg 59"))
+        older = (await self.get(f"/api/messages/bobby?before={page[0]['id']}", a))[1]["messages"]
+        self.assertEqual([m["body"] for m in older][:2], ["hey bob", "msg 0"])
+        self.assertEqual(len(older), 11)
+        await wb.close()

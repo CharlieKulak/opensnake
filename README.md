@@ -313,7 +313,7 @@ remove it. Bots and people can play in the same match.
 are online. An invite pops up for them wherever they are in the game: they
 press **Join** (or **J**) to come straight to your match.
 
-The Online screen's other tabs (keys **1**-**5**) need an account:
+The Online screen's other tabs (keys **1**-**6**) need an account:
 
 **Profile.** Your rank, wins and losses, world records held and snake points.
 Write a bio (up to 160 characters) and set a profile picture: **Upload
@@ -325,7 +325,14 @@ profile.
 
 **Friends.** Search players by username and send friend requests; they
 accept on their Friends tab. Your friends list shows who's online and who's
-in a match. **Play** hosts a match and invites that friend.
+in a match. **Play** hosts a match and invites that friend; **Message**
+opens a chat with them.
+
+**Messages.** Chat with your friends (only friends can message each other).
+Your conversations are on the left, newest first, with an unread count; the
+Messages tab shows how many messages you haven't read. A message that
+arrives while you're somewhere else in the game pops up in the corner.
+Scroll up in a chat for older messages.
 
 **Snake points** are the currency for the store. You earn them on any site
 you're logged in to:
@@ -347,8 +354,10 @@ Gold 25,000, Diamond 100,000) and each shows its odds. Opening one spins a
 reel of items that slows down onto your prize. Epic, Legendary and Mythic
 skins, and six texture packs (Midnight, Sakura, Desert Night, Synthwave,
 Arctic and Obsidian), only come from loot boxes. A duplicate turns back into
-snake points. There are 50 skins: plain colours, stripes, metals that
-shimmer, and animated ones that flow, pulse and glow. **Collection** is
+snake points. There are 70 skins: plain colours, stripes, metals that
+shimmer, and animated ones that flow, pulse and glow, plus 20 **Stand**
+skins themed on JoJo's Bizarre Adventure (Star Platinum, The World, King
+Crimson and more), which only come from loot boxes. **Collection** is
 where you equip a skin (it's used whenever you play single-player, even
 offline) and turn won texture packs on.
 

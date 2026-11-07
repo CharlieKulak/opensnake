@@ -82,6 +82,7 @@ class Online:
             "users": Field("Search players by username", max_len=20, allowed=ok_name),
             "community": Field("Search by name or creator", max_len=40),
             "rename": Field("Category name", max_len=40),
+            "dm": Field("Write a message", max_len=500),
             "picture_path": Field("Path to an image, e.g. /home/me/Pictures/me.png", max_len=400),
         }
         self.tab = "play"            # Online screen tab: play / profile / friends / store / community
@@ -192,6 +193,7 @@ class Online:
             self.user = r.data.get("username", self.user)
             self.set_me(r.data)
             self.hello()
+            self.hub.load_chats()  # for the unread badge
         elif r.status == 401:  # login expired or the server was reset
             self.save_login("", "")
             self.me = None
@@ -466,6 +468,8 @@ class Online:
             self.say(f"Invite sent to {m.get('name')}.", GOOD)
         elif t == "friends":
             self.hub.load_friends()
+        elif t == "dm":
+            self.hub.on_dm(m)
         elif t == "reward":
             change = m.get("rp_change", 0)
             rank = f"   {m['rank']} ({'+' if change >= 0 else ''}{change} RP)" if m.get("ranked") else ""
@@ -591,8 +595,8 @@ class Online:
             return
         if state == "online" and self.tab != "play" and self.hub.key(ev):
             return
-        if state == "online" and pygame.K_1 <= ev.key <= pygame.K_5:
-            from .hub import TABS
+        from .hub import TABS
+        if state == "online" and pygame.K_1 <= ev.key < pygame.K_1 + len(TABS):
             self.hub.open_tab(TABS[ev.key - pygame.K_1][0])
             return
         if ev.key == pygame.K_ESCAPE:
@@ -668,6 +672,8 @@ class Online:
             self.hub.picture_from_path()
         elif self.focus == "rename":
             self.hub.save_rename()
+        elif self.focus == "dm":
+            self.hub.send_dm()
 
     def _my_snake(self):
         g = self.game
@@ -788,9 +794,10 @@ class Online:
         self._button(pygame.Rect(p.centerx - int(70 * grow), p.bottom - int(ph * 0.05) - bh, int(140 * grow), bh),
                      "Back", self.app.open_menu)
         hint = {"play": "Tab: next box   Enter: confirm   H: host   B: public matches   Esc: back",
-                "store": "Wheel / Up / Down: scroll   1-5: tabs   Esc: back",
-                "friends": "Click a player to see their profile   1-5: tabs   Esc: back",
-                "community": "Type to search   Wheel: scroll   1-5: tabs   Esc: back"}.get(self.tab, "1-5: tabs   Esc: back")
+                "store": "Wheel / Up / Down: scroll   1-6: tabs   Esc: back",
+                "friends": "Click a player to see their profile   1-6: tabs   Esc: back",
+                "messages": "Enter: send   Wheel: older messages   1-6: tabs   Esc: close chat",
+                "community": "Type to search   Wheel: scroll   1-6: tabs   Esc: back"}.get(self.tab, "1-6: tabs   Esc: back")
         self._text(hint, ph * 0.022, MUTED, midbottom=(p.centerx, p.bottom - 8))
         self.focus = focus
 

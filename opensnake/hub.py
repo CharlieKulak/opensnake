@@ -27,8 +27,8 @@ BAD = (210, 60, 50)
 CARD = (244, 246, 241)
 POINTS = (214, 150, 0)
 
-TABS = [("play", "Play"), ("profile", "Profile"), ("friends", "Friends"), ("store", "Store"),
-        ("community", "Community")]
+TABS = [("play", "Play"), ("profile", "Profile"), ("friends", "Friends"), ("messages", "Messages"),
+        ("store", "Store"), ("community", "Community")]
 STORE_TABS = [("shop", "Shop"), ("crates", "Loot boxes"), ("collection", "Collection")]
 
 REEL_CARDS = 48       # cards on a loot box reel
@@ -59,6 +59,14 @@ class Hub:
         self.pictures: dict = {}           # player name -> [version, image or None while loading]
         self.picker: ImagePicker | None = None
         self.renaming: str | None = None   # id of the community category being renamed
+        # messages
+        self.chats: list[dict] = []        # conversations, newest first
+        self.unread = 0
+        self.chat_with: str | None = None  # the friend whose chat is open
+        self.chat: list[dict] = []         # its messages, oldest first
+        self.chat_more = False             # older messages to load
+        self.chat_scroll = 0               # pixels scrolled up from the newest message
+        self.chat_loading = False
         self.typing_path = False           # no file dialog here: type the picture's path instead
 
     @property
@@ -70,6 +78,7 @@ class Hub:
     def fields_for(self, tab: str) -> list[str]:
         return {"profile": ([] if self.viewing else ["bio"] + (["picture_path"] if self.typing_path else [])),
                 "friends": ["users"],
+                "messages": ["dm"] if self.chat_with else [],
                 "community": ["community"] + (["rename"] if self.renaming else [])}.get(tab, [])
 
     def open_tab(self, tab: str) -> None:
@@ -87,6 +96,11 @@ class Hub:
             self.on.refresh_me()
         elif tab == "community":
             self.load_community()
+        elif tab == "messages":
+            self.load_friends()
+            self.load_chats()
+            if self.chat_with:
+                self.open_chat(self.chat_with)
 
     def load_friends(self) -> None:
         if not self.on.logged_in:
@@ -122,6 +136,86 @@ class Hub:
                 self.community = []
                 self.on.say(r.message, BAD)
         self.on.request("GET", "/api/categories?" + urllib.parse.urlencode({"q": query}), then=done, auth=False)
+
+    # -- messages
+
+    def load_chats(self) -> None:
+        if not self.on.logged_in:
+            return
+
+        def done(r):
+            if r.ok:
+                self.chats = r.data.get("chats", [])
+                self.unread = r.data.get("unread", 0)
+        self.on.request("GET", "/api/messages", then=done)
+
+    def message(self, name: str) -> None:
+        """Open a chat with a friend from anywhere on the Online screen."""
+        self.chat_with = None
+        self.open_tab("messages")
+        self.open_chat(name)
+
+    def open_chat(self, name: str) -> None:
+        self.chat_with, self.chat, self.chat_scroll, self.chat_more = name, [], 0, False
+        self.on.fields["dm"].value = ""
+        self.on.focus = "dm"
+        for c in self.chats:
+            if c["name"].lower() == name.lower():
+                self.unread -= c.get("unread", 0)
+                c["unread"] = 0
+        self.load_messages()
+
+    def load_messages(self, before: int | None = None) -> None:
+        name = self.chat_with
+        self.chat_loading = True
+
+        def done(r):
+            self.chat_loading = False
+            if not r.ok or name != self.chat_with:
+                return
+            got = r.data.get("messages", [])
+            self.chat_more = len(got) >= 50
+            have = {m["id"] for m in self.chat}
+            self.chat = [m for m in got if m["id"] not in have] + self.chat if before else got
+        path = f"/api/messages/{urllib.parse.quote(name)}" + (f"?before={before}" if before else "")
+        self.on.request("GET", path, then=done)
+
+    def send_dm(self) -> None:
+        body = self.on.fields["dm"].value.strip()
+        if not body or not self.chat_with:
+            return
+        self.on.fields["dm"].value = ""
+
+        def done(r):
+            if r.ok:
+                self.add_message(r.data)
+            else:
+                self.on.fields["dm"].value = body  # give it back to try again
+                self.on.say(r.message, BAD)
+        self.on.request("POST", "/api/messages", {"to": self.chat_with, "body": body}, then=done)
+
+    def add_message(self, m: dict) -> None:
+        if any(x["id"] == m["id"] for x in self.chat):
+            return
+        self.chat.append(m)
+        self.chat_scroll = 0  # jump to the newest
+
+    def on_dm(self, m: dict) -> None:
+        """A message arrived (pushed by the server)."""
+        me = self.on.user.lower()
+        other = m["to"] if m["from"].lower() == me else m["from"]
+        viewing = self.on.app.state == "online" and self.on.tab == "messages" and \
+            (self.chat_with or "").lower() == other.lower()
+        if viewing:
+            self.add_message(m)
+            if m["from"].lower() != me:  # tell the server it's been read
+                self.load_messages()
+        elif m["from"].lower() != me:
+            self.unread += 1
+            text = m["body"] if len(m["body"]) <= 40 else m["body"][:39] + "..."
+            self.on.toast(f"{m['from']}: {text}", ACCENT, 6000)
+            self.app.sfx.play("turn")
+        self.load_chats()
 
     def sync_names(self, entries) -> None:
         """Saved community categories take the name their creator has given them since."""
@@ -346,6 +440,9 @@ class Hub:
     # ---- input ------------------------------------------------------------------------------
 
     def wheel(self, dy: int) -> None:
+        if self.on.tab == "messages" and self.chat_with:
+            self.chat_scroll = max(0, self.chat_scroll + dy * 40)
+            return
         self.scroll = max(0, self.scroll - dy)
 
     def key(self, ev) -> bool:
@@ -359,6 +456,9 @@ class Hub:
             return True
         if ev.key == pygame.K_ESCAPE and self.renaming:
             self.cancel_rename()
+            return True
+        if ev.key == pygame.K_ESCAPE and self.on.tab == "messages" and self.chat_with:
+            self.chat_with = None
             return True
         if ev.key in (pygame.K_UP, pygame.K_DOWN):
             self.wheel(1 if ev.key == pygame.K_UP else -1)
@@ -452,8 +552,15 @@ class Hub:
         pygame.draw.rect(scr, color, rect, 3, border_radius=10)
         art = pygame.Rect(rect.x + 10, rect.y + 8, rect.w - 20, int(rect.h * 0.45))
         self.item_art(art, item, now)
-        self.text(cos.item_name(item), rect.h * 0.15, INK, midtop=(rect.centerx, art.bottom + 4))
-        self.text(cos.RARITY_NAMES[rarity], rect.h * 0.12, color, midbottom=(rect.centerx, rect.bottom - 6))
+        name = cos.item_name(item)
+        size = rect.h * 0.15
+        while size > 9 and self.app.renderer.font(int(size)).size(name)[0] > rect.w - 12:
+            size -= 1  # long names shrink to fit the card
+        self.text(name, size, INK, midtop=(rect.centerx, art.bottom + 4))
+        kind, _, key = item.partition(":")
+        series = cos.SKIN_BY_ID[key].series if kind == "skin" else ""
+        label = cos.RARITY_NAMES[rarity] + (f" · {series}" if series else "")
+        self.text(label, rect.h * 0.12, color, midbottom=(rect.centerx, rect.bottom - 6))
 
     def points_badge(self, points: int, size: float, **pos) -> pygame.Rect:
         txt = f"{cos.format_points(points)} snake points"
@@ -479,6 +586,10 @@ class Hub:
             on = self.on.tab == tab
             pygame.draw.rect(self.app.screen, ACCENT if on else (236, 239, 232), r, border_radius=r.h // 2)
             self.text(label, th * 0.48, WHITE if on else INK, center=r.center)
+            if tab == "messages" and self.unread > 0:  # unread badge
+                c = (r.right - th * 0.3, r.y + th * 0.18)
+                pygame.draw.circle(self.app.screen, BAD, c, th * 0.32)
+                self.text(str(min(99, self.unread)), th * 0.34, WHITE, center=c)
             self.on.hits.append((r, lambda t=tab: self.open_tab(t)))
         return y + th
 
@@ -496,6 +607,115 @@ class Hub:
             self.draw_store(p, top, bottom)
         elif tab == "community":
             self.draw_community(p, top, bottom)
+        elif tab == "messages":
+            self.draw_messages(p, top, bottom)
+
+    # ---- Messages --------------------------------------------------------------------------------
+
+    def wrap(self, text: str, font, width: int) -> list[str]:
+        lines, line = [], ""
+        for word in text.split(" "):
+            while font.size(word)[0] > width:  # a very long word: break it
+                cut = len(word)
+                while cut > 1 and font.size(word[:cut])[0] > width:
+                    cut -= 1
+                if line:
+                    lines.append(line)
+                    line = ""
+                lines.append(word[:cut])
+                word = word[cut:]
+            trial = f"{line} {word}" if line else word
+            if font.size(trial)[0] <= width:
+                line = trial
+            else:
+                lines.append(line)
+                line = word
+        lines.append(line)
+        return lines
+
+    def draw_messages(self, p, top, bottom) -> None:
+        ph = p.h
+        x, w = p.x + 40, p.w - 80
+        scr = self.app.screen
+        row = max(48, int(ph * 0.075))
+        lw = int(w * 0.33)
+        # left: conversations, then friends you haven't messaged yet
+        self.text("Chats", ph * 0.03, INK, topleft=(x, top))
+        y = top + ph * 0.042
+        by_name = {c["name"].lower(): c for c in self.chats}
+        people = list(self.chats) + [f for f in self.friends["friends"] if f["name"].lower() not in by_name]
+        if not people:
+            self.text("Add friends to message them.", ph * 0.024, MUTED, topleft=(x, y))
+        fits = max(1, int((bottom - y) // (row + 6)))
+        for person in people[:fits]:
+            r = pygame.Rect(x, y, lw, row)
+            on = (self.chat_with or "").lower() == person["name"].lower()
+            pygame.draw.rect(scr, (226, 238, 255) if on else CARD, r, border_radius=8)
+            rad = row * 0.34
+            self.avatar((r.x + 8 + rad, r.centery), rad, person.get("avatar"), person["name"])
+            nx = r.x + 16 + 2 * rad
+            self.dot((nx + 4, r.y + row * 0.32), person.get("online"))
+            self.text(person["name"], row * 0.34, INK, midleft=(nx + 14, r.y + row * 0.32))
+            last = person.get("last")
+            if last:
+                prev = ("You: " if last["from"].lower() == self.on.user.lower() else "") + last["body"]
+                font = self.app.renderer.font(max(10, int(row * 0.28)), False)
+                while len(prev) > 3 and font.size(prev)[0] > r.right - nx - 40:
+                    prev = prev[:-4] + "..."
+                self.text(prev, row * 0.28, MUTED, midleft=(nx + 2, r.y + row * 0.72))
+            if person.get("unread"):
+                c = (r.right - row * 0.32, r.centery)
+                pygame.draw.circle(scr, BAD, c, row * 0.22)
+                self.text(str(person["unread"]), row * 0.26, WHITE, center=c)
+            self.on.hits.append((r, lambda n=person["name"]: self.open_chat(n)))
+            y += row + 6
+
+        # right: the open chat
+        cx = x + lw + 20
+        cw = x + w - cx
+        if not self.chat_with:
+            self.text("Pick a friend to chat with.", ph * 0.028, MUTED, center=(cx + cw // 2, (top + bottom) // 2))
+            return
+        friend = next((f for f in people if f["name"].lower() == self.chat_with.lower()), {"name": self.chat_with})
+        head = self.text(friend["name"], ph * 0.034, INK, topleft=(cx, top))
+        self.text("online" if friend.get("online") else "offline", ph * 0.022, GOOD if friend.get("online") else MUTED,
+                  midleft=(head.right + 12, head.centery))
+        area = pygame.Rect(cx, top + ph * 0.05, cw, bottom - top - ph * 0.05 - row - 10)
+        pygame.draw.rect(scr, (248, 249, 246), area, border_radius=10)
+        font = self.app.renderer.font(max(12, int(ph * 0.026)), False)
+        lh = font.get_linesize()
+        pad = 10
+        # lay the bubbles out from the newest up
+        bubbles, total = [], 0
+        for m in reversed(self.chat):
+            mine = m["from"].lower() == self.on.user.lower()
+            lines = self.wrap(m["body"], font, int(cw * 0.68))
+            h = len(lines) * lh + 2 * pad
+            bubbles.append((m, mine, lines, h))
+            total += h + 8
+        self.chat_scroll = min(self.chat_scroll, max(0, total - area.h + 10))
+        old_clip = scr.get_clip()
+        scr.set_clip(area)
+        yb = area.bottom - 8 + self.chat_scroll
+        for m, mine, lines, h in bubbles:
+            yb -= h
+            if yb + h < area.y:
+                break
+            bw = max(font.size(line)[0] for line in lines) + 2 * pad
+            br = pygame.Rect(area.right - bw - 10 if mine else area.x + 10, yb, bw, h)
+            pygame.draw.rect(scr, ACCENT if mine else (230, 233, 226), br, border_radius=12)
+            for i, line in enumerate(lines):
+                img = font.render(line, True, WHITE if mine else INK)
+                scr.blit(img, (br.x + pad, br.y + pad + i * lh))
+            yb -= 8
+        scr.set_clip(old_clip)
+        if not self.chat and not self.chat_loading:
+            self.text(f"Say hi to {self.chat_with}!", ph * 0.026, MUTED, center=area.center)
+        if self.chat_more and self.chat_scroll >= total - area.h and not self.chat_loading and self.chat:
+            self.load_messages(before=self.chat[0]["id"])  # scrolled to the top: fetch older ones
+        iy = area.bottom + 10
+        self.on._field("dm", pygame.Rect(cx, iy, int(cw * 0.8), row))
+        self.button(pygame.Rect(cx + int(cw * 0.82), iy, int(cw * 0.18), row), "Send", self.send_dm, True)
 
     # ---- Profile ---------------------------------------------------------------------------------
 
@@ -549,7 +769,9 @@ class Hub:
             name = prof["name"]
             if state == "friends":
                 self.button(pygame.Rect(x, y, bw, row), "Play together", lambda: self.play_with(name), True)
-                self.button(pygame.Rect(x + bw + 12, y, bw, row), "Remove friend", lambda: self.friend(name, False))
+                self.button(pygame.Rect(x + bw + 12, y, bw, row), "Message", lambda: self.message(name))
+                self.button(pygame.Rect(x + 2 * (bw + 12), y, bw, row), "Remove friend",
+                            lambda: self.friend(name, False))
             elif state == "incoming":
                 self.button(pygame.Rect(x, y, bw, row), "Accept request", lambda: self.friend(name, True), True)
                 self.button(pygame.Rect(x + bw + 12, y, bw, row), "Decline", lambda: self.friend(name, False))
@@ -689,7 +911,9 @@ class Hub:
         fits = max(1, int((bottom - y) // (row + 6)))
         self.scroll = min(self.scroll, max(0, len(fr["friends"]) - fits))
         for f in fr["friends"][self.scroll:self.scroll + fits]:
-            btns = [("Play", lambda n=f["name"]: self.play_with(n), True)] if f["online"] else []
+            btns = [("Message", lambda n=f["name"]: self.message(n), False)]
+            if f["online"]:
+                btns.append(("Play", lambda n=f["name"]: self.play_with(n), True))
             self.person_row(pygame.Rect(rx, y, col, row), f, btns)
             y += row + 6
 

@@ -93,6 +93,7 @@ class Skin:
     outline: tuple | None = None
     glow: bool = False      # the outline pulses
     price: int | None = None  # None: only from loot boxes
+    series: str = ""        # a themed set, shown on the item (e.g. "Stand")
 
     @property
     def shop(self) -> bool:
@@ -104,9 +105,14 @@ def _c(hexstr: str) -> tuple:
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
-def _skin(id, name, rarity, pattern, colors, outline=None, glow=False, price=None):
+def _skin(id, name, rarity, pattern, colors, outline=None, glow=False, price=None, series=""):
     return Skin(id, name, rarity, pattern, tuple(_c(c) for c in colors),
-                _c(outline) if outline else None, glow, price)
+                _c(outline) if outline else None, glow, price, series)
+
+
+def _stand(id, name, rarity, pattern, colors, outline=None, glow=False):
+    """A skin themed on a Stand from JoJo's Bizarre Adventure: loot boxes only."""
+    return _skin(id, name, rarity, pattern, colors, outline, glow, series="Stand")
 
 
 SKINS = [
@@ -169,6 +175,35 @@ SKINS = [
     # Mythic: the rarest, loot boxes only
     _skin("celestial", "Celestial", "mythic", "rainbow", ["#ffffff"], "#ffd54f", glow=True),
     _skin("basilisk", "Basilisk", "mythic", "shimmer", ["#003d1f", "#00e676"], "#ffd700", glow=True),
+
+    # Stands (JoJo's Bizarre Adventure): colour themes, loot boxes only
+    _stand("hermitpurple", "Hermit Purple", "epic", "grad", ["#4a1f73", "#9b59d0"], "#2a0f45"),
+    _stand("silverchariot", "Silver Chariot", "epic", "shimmer", ["#8f9aa8", "#f4f7fb"], "#4d5866"),
+    _stand("hierophantgreen", "Hierophant Green", "epic", "pulse", ["#14804a", "#7dffb0"], "#b6ffd2", glow=True),
+    _stand("thehand", "The Hand", "epic", "stripes", ["#2e5cb8", "#e9eef7"], "#1b2f5c"),
+    _stand("echoes", "Echoes", "epic", "stripes", ["#3aa865", "#f29b38"], "#1d5a35"),
+    _stand("stickyfingers", "Sticky Fingers", "epic", "stripes", ["#2a5db0", "#f2f4f8", "#2a5db0", "#d4a72c"],
+           "#16336b"),
+    _stand("aerosmith", "Aerosmith", "epic", "flow", ["#e8702a", "#f5c542", "#5aa0d8", "#e8702a"]),
+    _stand("weatherreport", "Weather Report", "epic", "flow", ["#5dade2", "#eaf2f8", "#a9cce3", "#5dade2"],
+           "#ffffff"),
+    _stand("moodyblues", "Moody Blues", "epic", "pulse", ["#2f3fb8", "#8e7cc3"], "#1a2270"),
+    _stand("goldexperience", "Gold Experience", "legendary", "shimmer", ["#e8b81e", "#fff4a8"], "#2e9e4f",
+           glow=True),
+    _stand("crazydiamond", "Crazy Diamond", "legendary", "stripes", ["#e88bc4", "#5aa9e6"], "#dde3f0", glow=True),
+    _stand("killerqueen", "Killer Queen", "legendary", "pulse", ["#d07bbd", "#f6d6ee"], "#3a2a3a", glow=True),
+    _stand("magiciansred", "Magician's Red", "legendary", "flow", ["#c0392b", "#e67e22", "#f1c40f", "#e67e22"],
+           "#ff8a00", glow=True),
+    _stand("purplehaze", "Purple Haze", "legendary", "pulse", ["#6f2da8", "#a8e05f"], "#d1ff8a", glow=True),
+    _stand("stonefree", "Stone Free", "legendary", "flow", ["#2a7fb8", "#3fbf9f", "#a6e3e9", "#3fbf9f"],
+           "#d6f5ff", glow=True),
+    _stand("madeinheaven", "Made in Heaven", "legendary", "rainbow", ["#ffffff"], "#ffffff", glow=True),
+    _stand("d4c", "Dirty Deeds Done Dirt Cheap", "legendary", "stripes", ["#3a6fd8", "#f2a7c3", "#f5f5f5"],
+           "#f5d76e", glow=True),
+    _stand("starplatinum", "Star Platinum", "mythic", "flow", ["#5b34a8", "#3fb0c9", "#7b4fd1", "#3fb0c9"],
+           "#f2c14e", glow=True),
+    _stand("theworld", "The World", "mythic", "shimmer", ["#d9a91e", "#fff2a0"], "#2f7a3e", glow=True),
+    _stand("kingcrimson", "King Crimson", "mythic", "pulse", ["#a3122b", "#efe6dc"], "#ffd27a", glow=True),
 ]
 SKIN_BY_ID = {s.id: s for s in SKINS}
 
