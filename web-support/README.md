@@ -25,6 +25,7 @@ websites running OpenSnake have completely separate logins and leaderboards.
 | `serve.py` | A plain file server for the release download (no accounts, records or versus) |
 | `opensnake.service` | systemd service to run the server in the background on Linux |
 | `update.sh` | Updates a server: pull, install, rebuild the web game, restart the service |
+| `rebuild-if-stale.sh` | Rebuilds the web game only if the game changed; the service runs it on start |
 | `build/` | Build output. Ignored by git, safe to delete |
 | `data/` | The server's accounts and records (`opensnake.db`). Ignored by git; back it up |
 
@@ -123,19 +124,28 @@ git pull
 PYTHON=.venv/bin/python web-support/build.sh --serve
 ```
 
-With the systemd service, run the update script as root. It pulls, installs
-any new dependencies, rebuilds the web game and restarts the service:
+With the systemd service, pull and restart (as root):
 
 ```sh
 cd /opt/opensnake
+git pull
+systemctl restart opensnake
+```
+
+When the service starts it checks whether the game has changed since the web
+game was last built, and rebuilds it if so (`web-support/rebuild-if-stale.sh`,
+which needs internet). That makes the restart take a minute or so; restarts
+with nothing new are instant. If the build fails, the server still starts,
+with the previous build, and says so in `journalctl -u opensnake`.
+
+If an update adds Python dependencies, use the update script instead. It
+pulls, installs them, rebuilds and restarts:
+
+```sh
 web-support/update.sh
 ```
 
-**Pulling alone doesn't update the website.** The browser plays the built
-copy in `web-support/build/`, so the site keeps the old version until it's
-rebuilt. The server prints a warning at startup (in `journalctl -u opensnake`)
-when the code is newer than the build. Players get the new build the next
-time they load the page.
+Players get the new build the next time they load the page.
 
 Accounts and records in `web-support/data/` are kept across updates.
 
@@ -221,6 +231,6 @@ the full server from the repository as described above.
 | `Address already in use` | Another server uses the port. Stop it, or use `--port 9000` |
 | Online screen says the website doesn't run the OpenSnake server | The site is being served by something else (e.g. `serve.py` or a static host). Start `opensnake.server` |
 | Versus can't connect, but logging in works | Your HTTPS proxy isn't passing WebSockets on `/ws`. See the nginx example above |
-| The website still shows the old version after `git pull` | The web game wasn't rebuilt. Run `web-support/update.sh` |
+| The website still shows the old version after `git pull` | Restart the service (it rebuilds on start), or run `web-support/update.sh`. Check `journalctl -u opensnake` for build errors |
 | Grey page that never starts | Click the page. If it still doesn't start, add `?-i` to the address to show pygbag's console |
 | The game needs internet the first time | It downloads pygbag's Python runtime from `pygame-web.github.io` |

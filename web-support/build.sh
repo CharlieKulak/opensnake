@@ -9,10 +9,13 @@
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
-src="$here/build/opensnake"  # the folder name becomes the game package name (opensnake.*)
+final="$here/build/opensnake"  # the folder name becomes the game package name (opensnake.*)
+# Build next to the current build and only swap it in once it works, so a
+# failed build (no internet, say) leaves the website running the old one.
+src="$here/build/next/opensnake"
 python=${PYTHON:-python3}
 
-rm -rf "$src"
+rm -rf "$here/build/next"
 mkdir -p "$src"
 cp "$here/main.py" "$src/main.py"
 # Copy the game package without caches. The server code stays out: it isn't
@@ -39,6 +42,11 @@ for ext in ("tar.gz", "apk"):
     old.rename(web / new)
 page.write_text(html, encoding="utf-8")
 PY
+rm -rf "$final.old"
+if [ -d "$final" ]; then mv "$final" "$final.old"; fi
+mv "$src" "$final"
+rm -rf "$final.old" "$here/build/next"
+src="$final"
 echo "Built: $src/build/web/"
 
 if [ "$1" = "--serve" ]; then

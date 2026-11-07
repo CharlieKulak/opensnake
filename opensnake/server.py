@@ -1118,12 +1118,17 @@ class Server:
 
 
 def stale_build(web_dir: Path | None) -> bool:
-    """True if the game code has changed since the web game was built (e.g. pulled but not rebuilt)."""
+    """True if the game has changed since the web game was built (e.g. pulled but not rebuilt).
+
+    Looks at everything that goes into the build: the game package (code, images,
+    sounds, packs) except the server, and the browser entry point."""
     builds = list(web_dir.glob("opensnake*.tar.gz")) if web_dir else []
     if not builds:
         return False
     code = Path(__file__).parent
-    newest = max(f.stat().st_mtime for f in code.rglob("*.py") if f.name != "server.py")
+    files = [f for f in code.rglob("*") if f.is_file() and f.name != "server.py" and "__pycache__" not in f.parts]
+    files.append(REPO / "web-support" / "main.py")
+    newest = max(f.stat().st_mtime for f in files if f.exists())
     return newest > max(f.stat().st_mtime for f in builds)
 
 
