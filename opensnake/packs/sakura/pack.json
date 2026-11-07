@@ -1,0 +1,12 @@
+{
+  "name": "Sakura",
+  "description": "Soft cherry-blossom pinks. (Loot box pack.)",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#ffe1ec",
+  "board_dark": "#fbd2e1",
+  "board_sand": "#f6e3c8",
+  "board_sand_dark": "#efd9bd",
+  "border": "#e88fb3",
+  "header": "#c2185b"
+}

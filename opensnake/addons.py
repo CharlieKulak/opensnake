@@ -41,6 +41,7 @@ class PackInfo:
     path: Path
     builtin: bool
     icon: Path | None  # pack.svg / pack.png, like Minecraft's pack.png
+    locked: bool = False  # a loot box pack: only listed once you've won it
 
 
 def _read_pack(pack_id: str, path: Path, builtin: bool) -> PackInfo:
@@ -54,7 +55,7 @@ def _read_pack(pack_id: str, path: Path, builtin: bool) -> PackInfo:
     icon = next((path / f for f in ("pack.svg", "pack.png") if (path / f).is_file()), None)
     name = str(meta.get("name") or path.name)[:40]
     desc = str(meta.get("description") or "")[:140]
-    return PackInfo(pack_id, name, desc, path, builtin, icon)
+    return PackInfo(pack_id, name, desc, path, builtin, icon, builtin and bool(meta.get("locked")))
 
 
 def discover_packs() -> list[PackInfo]:

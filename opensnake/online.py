@@ -11,6 +11,7 @@ import urllib.parse
 
 import pygame
 
+from . import cosmetics as cos
 from .game import DIRS, OPPOSITE, Game, apply_state
 from .modes import MODE_NAMES
 from .net import WEB, Request, Socket, page_origin, set_page_title, web_storage_get, web_storage_set, ws_url
@@ -77,7 +78,19 @@ class Online:
             "code": Field("Code", max_len=4, upper=True, allowed="ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
             "search": Field("Search by match name, host or code", max_len=40),
             "match_name": Field("Match name", max_len=32),
+            "bio": Field("Write something about yourself", max_len=160),
+            "users": Field("Search players by username", max_len=20, allowed=ok_name),
+            "community": Field("Search by name or creator", max_len=40),
         }
+        self.tab = "play"            # Online screen tab: play / profile / friends / store / community
+        self.me: dict | None = None  # your profile, points and items on this server
+        self.toasts: list[list] = []  # [text, colour, until (ms)]
+        self.invite: dict | None = None  # a friend's invite waiting for an answer
+        self.expect_match = False    # the socket is for a match (not just showing you as online)
+        self.invite_after_host = None  # friend to invite once the match we're hosting is ready
+        self.bot_level = "normal"    # the level of bots the host adds in the lobby
+        self.lobby_friends = False   # showing the invite-friends list in the lobby
+        self.last_hello = -99999
         self.focus: str | None = None
         self.hits: list[tuple[pygame.Rect, object]] = []
         # versus
@@ -106,6 +119,8 @@ class Online:
         self.matches_at = 0          # when the list was last asked for (ms)
         self.match_scroll = 0
         self.load_login()
+        from .hub import Hub
+        self.hub = Hub(self)
         if self.server:
             self.check_server()
 
@@ -173,9 +188,37 @@ class Online:
     def _me(self, r):
         if r.ok:
             self.user = r.data.get("username", self.user)
+            self.set_me(r.data)
+            self.hello()
         elif r.status == 401:  # login expired or the server was reset
             self.save_login("", "")
+            self.me = None
             self.say("Your saved login is no longer valid. Please log in again.", BAD)
+
+    def set_me(self, data: dict) -> None:
+        """Your account's profile. Your skin and items are also kept in the settings, so they
+        still show when you play offline."""
+        if "points" not in data and self.me:
+            data = {**self.me, **data}
+        self.me = data
+        s = self.app.settings
+        s["skin"] = data.get("skin") or ""
+        s["unlocked"] = sorted(set(s.get("unlocked") or []) | set(data.get("inventory") or []))
+        self.app.store.save()
+
+    def refresh_me(self) -> None:
+        if self.logged_in:
+            self.request("GET", "/api/me", then=self._me)
+
+    def toast(self, text: str, color=GOOD, ms: int = 4500) -> None:
+        self.toasts.append([text, color, pygame.time.get_ticks() + ms])
+        self.toasts = self.toasts[-3:]
+
+    def hello(self) -> None:
+        """Keep a connection open while logged in, so friends see you online and can invite you."""
+        self.last_hello = pygame.time.get_ticks()
+        if self.token and self.server_state == "ok" and not self.sock:
+            self.send({"t": "hello"})
 
     def fetch_records(self) -> None:
         def done(r):
@@ -207,6 +250,10 @@ class Online:
                 self.fields["password"].value = ""
                 self.say(("Account created. " if create else "") + f"Logged in as {self.user}.", GOOD)
                 self.fetch_records()
+                if self.sock:  # reconnect as the account (not as a guest)
+                    self.sock.close()
+                    self.sock = None
+                self.refresh_me()
             else:
                 self.say(r.message, BAD)
         self.say("Creating account..." if create else "Logging in...")
@@ -217,6 +264,11 @@ class Online:
         if self.token:
             self.request("POST", "/api/logout", {})
         self.save_login("", "")
+        self.me = None
+        if self.sock and not self.room:
+            self.sock.close()
+            self.sock = None
+        self.tab = "play"
         self.say("Logged out.")
 
     @property
@@ -233,19 +285,37 @@ class Online:
             return
 
         def done(r):
+            earned = r.data.get("earned", 0) if r.ok else 0
+            bonus = f"  +{cos.format_points(earned)} snake points" if earned else ""
             if not r.ok:
                 report(f"Not submitted: {r.message}", BAD)
             elif not r.data.get("valid"):
                 report("The server couldn't verify this run.", BAD)
             elif r.data.get("wr"):
-                report(f"New world record on {self.site}!", GOOD)
+                report(f"New world record on {self.site}!{bonus}", GOOD)
             elif r.data.get("pb"):
-                report(f"Submitted: #{r.data.get('rank')} on {self.site}", GOOD)
+                report(f"Submitted: #{r.data.get('rank')} on {self.site}{bonus}", GOOD)
             else:
                 report(f"Submitted to {self.site} (not your best there)", MUTED)
+            if earned:
+                self.toast(f"+{cos.format_points(earned)} snake points", GOOD)
+            if r.ok and "points" in r.data and self.me:
+                self.me["points"] = r.data["points"]
             self.fetch_records()
         report(f"Submitting to {self.site}...", MUTED)
         self.request("POST", "/api/runs", run_json, then=done)
+
+    def report_round(self, fruit: int) -> None:
+        """Snake points for a finished single-player round."""
+        if not self.logged_in or self.mods_on:
+            return
+
+        def done(r):
+            if r.ok and r.data.get("earned"):
+                self.toast(f"+{cos.format_points(r.data['earned'])} snake points", GOOD)
+                if self.me:
+                    self.me["points"] = r.data["points"]
+        self.request("POST", "/api/rounds", {"fruit": int(fruit)}, then=done)
 
     # ---- public matches --------------------------------------------------------------------
 
@@ -298,6 +368,13 @@ class Online:
     def poll(self) -> None:
         self._ping()
         self._poll_matches()
+        self.hub.poll()
+        now = pygame.time.get_ticks()
+        if self.logged_in and not self.sock and now - self.last_hello > 15000:
+            self.hello()  # (re)connect so friends see you online
+        if self.invite and now > self.invite["until"]:
+            self.invite = None
+        self.toasts = [t for t in self.toasts if t[2] > now]
         for req, then in list(self.requests):
             if req.poll():
                 self.requests.remove((req, then))
@@ -321,7 +398,7 @@ class Online:
                     msg["s"]["events"] = carried + msg["s"].get("events", [])
                 self.on_message(msg)
             if self.sock.state in ("closed", "error"):
-                lost = self.sock.state == "error" or self.room is not None
+                lost = (self.sock.state == "error" and self.expect_match) or self.room is not None
                 self.sock = None
                 self.room = None
                 if lost:
@@ -351,6 +428,9 @@ class Online:
             if not self.room or self.room.get("code") != m["code"]:
                 set_page_title(f"OpenSnake - match {m['code']}")
             self.room = m
+            if self.invite_after_host and m.get("host") == self.my_id:
+                self.send({"t": "invite", "name": self.invite_after_host})
+                self.invite_after_host = None
             if self.focus != "match_name":  # don't fight the host while they type
                 self.fields["match_name"].value = m.get("name", "")
             if m["state"] == "lobby" and app.state != "lobby":
@@ -377,6 +457,20 @@ class Online:
             self._predict()
             app.acc = 0.0
             app.drain()
+        elif t == "invite":
+            self.invite = {**m, "until": pygame.time.get_ticks() + 30000}
+            app.sfx.play("start")
+        elif t == "invited":
+            self.say(f"Invite sent to {m.get('name')}.", GOOD)
+        elif t == "friends":
+            self.hub.load_friends()
+        elif t == "reward":
+            change = m.get("rp_change", 0)
+            rank = f"   {m['rank']} ({'+' if change >= 0 else ''}{change} RP)" if m.get("ranked") else ""
+            self.toast(f"+{cos.format_points(m.get('points', 0))} snake points{rank}", GOOD, 6000)
+            if self.me:
+                self.me.update(points=m.get("balance", self.me.get("points", 0)), rp=m.get("rp", 0),
+                               rank=m.get("rank", ""))
         elif t == "pong" and isinstance(m.get("at"), (int, float)):
             rtt = pygame.time.get_ticks() - m["at"]
             self.ping_ms = rtt if self.ping_ms is None else 0.7 * self.ping_ms + 0.3 * rtt
@@ -395,7 +489,7 @@ class Online:
 
     # ---- actions --------------------------------------------------------------------------
 
-    def host(self) -> None:
+    def host(self, bots=None) -> None:
         if self.mods_on:
             self.say(self.MODS_MESSAGE, BAD)
             return
@@ -403,7 +497,9 @@ class Online:
             self.say("Connect to a server first.", BAD)
             return
         self.say("Creating a match...")
-        self.send({"t": "host", "settings": {"size": "medium", "speed": 0.5, "apples": 3, "goal": 0, "modes": []}})
+        self.expect_match = True
+        self.send({"t": "host", "settings": {"size": "medium", "speed": 0.5, "apples": 3, "goal": 0, "modes": []},
+                   "bots": bots or []})
 
     def join(self, code: str | None = None) -> None:
         code = (code or self.fields["code"].value).strip().upper()
@@ -415,9 +511,20 @@ class Online:
             self.say("Match codes are 4 letters.", BAD)
         else:
             self.say(f"Joining {code}...")
+            self.expect_match = True
             self.send({"t": "join", "code": code})
 
+    def accept_invite(self) -> None:
+        inv, self.invite = self.invite, None
+        if inv:
+            if self.room:  # leave the match you're in for the new one
+                self.leave()
+            self.app.state = "online"
+            self.tab = "play"
+            self.join(inv["code"])
+
     def leave(self) -> None:
+        self.expect_match = False
         if self.sock:
             self.send({"t": "leave"})
         set_page_title("OpenSnake")
@@ -480,6 +587,12 @@ class Online:
             if self.focus == "match_name" and f.value != before:
                 self.set_details(name=f.value)
             return
+        if state == "online" and self.tab != "play" and self.hub.key(ev):
+            return
+        if state == "online" and pygame.K_1 <= ev.key <= pygame.K_5:
+            from .hub import TABS
+            self.hub.open_tab(TABS[ev.key - pygame.K_1][0])
+            return
         if ev.key == pygame.K_ESCAPE:
             if state == "lobby":
                 self.leave()
@@ -489,9 +602,9 @@ class Online:
                 self.app.open_menu()
         elif ev.key == pygame.K_TAB and self.visible_fields():
             self.next_field(1)
-        elif ev.key == pygame.K_h and state == "online":
+        elif ev.key == pygame.K_h and state == "online" and self.tab == "play":
             self.host()
-        elif ev.key == pygame.K_b and state == "online":
+        elif ev.key == pygame.K_b and state == "online" and self.tab == "play":
             self.open_matches()
         elif ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and state == "matches" and self.matches:
             self.join(self.matches[0]["code"])
@@ -518,6 +631,8 @@ class Online:
             return ["search"]
         if self.app.state == "lobby":
             return ["match_name"] if self.is_host() else []
+        if self.tab != "play":
+            return self.hub.fields_for(self.tab)
         keys = [] if WEB else ["server"]
         if not self.logged_in:
             keys += ["username", "password"]
@@ -540,6 +655,13 @@ class Online:
             self.focus = None
         elif self.focus == "match_name":
             self.focus = None
+        elif self.focus == "bio":
+            self.hub.save_profile(bio=self.fields["bio"].value)
+            self.focus = None
+        elif self.focus == "users":
+            self.hub.search_users()
+        elif self.focus == "community":
+            self.hub.load_community()
 
     def _my_snake(self):
         g = self.game
@@ -646,15 +768,35 @@ class Online:
         p, grow = self._panel()
         ph, pw = p.h, p.w
         focus = self.focus  # clicks reset focus; keep it while drawing
-        self._text("Online", ph * 0.07, (74, 117, 44), midtop=(p.centerx, p.y + ph * 0.025))
+        self._text("Online", ph * 0.06, (74, 117, 44), midtop=(p.centerx, p.y + ph * 0.02))
+        top = self.hub.draw_tabs(p, p.y + int(ph * 0.09)) + int(ph * 0.03)
+        bottom = p.bottom - int(ph * 0.16)
+        if self.tab == "play":
+            self.draw_play_tab(p, top)
+        else:
+            self.hub.draw(p, top, bottom)
+
+        if self.message:
+            self._text(self.message, ph * 0.028, self.message_color, midbottom=(p.centerx, p.bottom - ph * 0.12))
+        bh = max(34, int(ph * 0.055))
+        self._button(pygame.Rect(p.centerx - int(70 * grow), p.bottom - int(ph * 0.05) - bh, int(140 * grow), bh),
+                     "Back", self.app.open_menu)
+        hint = {"play": "Tab: next box   Enter: confirm   H: host   B: public matches   Esc: back",
+                "store": "Wheel / Up / Down: scroll   1-5: tabs   Esc: back",
+                "friends": "Click a player to see their profile   1-5: tabs   Esc: back",
+                "community": "Type to search   Wheel: scroll   1-5: tabs   Esc: back"}.get(self.tab, "1-5: tabs   Esc: back")
+        self._text(hint, ph * 0.022, MUTED, midbottom=(p.centerx, p.bottom - 8))
+        self.focus = focus
+
+    def draw_play_tab(self, p, y) -> None:
+        ph, pw = p.h, p.w
         x, w = p.x + 40, pw - 80
-        row = max(34, int(ph * 0.055))
-        y = p.y + int(ph * 0.13)
-        sec = ph * 0.034
+        row = max(32, int(ph * 0.05))
+        sec = ph * 0.032
 
         # server
         self._text("Server", sec, INK, topleft=(x, y))
-        y += sec + 8
+        y += sec + 6
         if WEB:
             self._text(f"This website: {self.site}", ph * 0.026, INK, topleft=(x, y))
             y += ph * 0.035
@@ -666,18 +808,23 @@ class Online:
         note = self.server_note or ("Type the address of an OpenSnake website, e.g. "
                                     "https://snake.example.com, and press Connect." if not WEB else "")
         self._text(note, ph * 0.023, color, topleft=(x, y))
-        y += ph * 0.05
+        y += ph * 0.045
 
         # account
         self._text("Account", sec, INK, topleft=(x, y))
-        y += sec + 8
+        y += sec + 6
         if self.logged_in:
-            self._text(f"Logged in as {self.user} on {self.site}", ph * 0.028, GOOD, topleft=(x, y + 6))
-            self._button(pygame.Rect(x + int(w * 0.75), y, int(w * 0.25), row), "Log out", self.logout)
-            y += row + 6
-            self._text("Your speedrun times are submitted to this site's leaderboard automatically.",
-                       ph * 0.022, MUTED, topleft=(x, y))
-            y += ph * 0.05
+            me = self.me or {}
+            self._text(f"Logged in as {self.user}", ph * 0.028, GOOD, topleft=(x, y + 6))
+            if me:
+                pill = self.hub.rank_pill(me.get("rank", "Hatchling"), ph * 0.024,
+                                          topleft=(x + int(w * 0.36), y + 6))
+                self.hub.points_badge(me.get("points", 0), ph * 0.026, midleft=(pill.right + 28, pill.centery))
+            self._button(pygame.Rect(x + int(w * 0.8), y, int(w * 0.2), row), "Log out", self.logout)
+            y += row + 4
+            self._text("You earn snake points for rounds, records and matches. Speedruns go on this site's "
+                       "leaderboard.", ph * 0.022, MUTED, topleft=(x, y))
+            y += ph * 0.045
         else:
             half = int(w * 0.36)
             self._field("username", pygame.Rect(x, y, half, row))
@@ -687,25 +834,27 @@ class Online:
             ok = self.server_state == "ok"
             self._button(pygame.Rect(bx, y, bw, row), "Log in", lambda: self.login(False), True, ok)
             self._button(pygame.Rect(bx + bw + 10, y, bw, row), "Create account", lambda: self.login(True), False, ok)
-            y += row + 6
-            self._text("Log in to put your speedruns on this site's leaderboard. You stay logged in on this "
-                       + ("browser." if WEB else "computer."), ph * 0.022, MUTED, topleft=(x, y))
-            y += ph * 0.05
+            y += row + 4
+            self._text("Log in to earn snake points, use the store, add friends and get ranked. You stay logged "
+                       "in on this " + ("browser." if WEB else "computer."), ph * 0.022, MUTED, topleft=(x, y))
+            y += ph * 0.045
 
         # versus
         self._text("Versus (1v1 up to 4v4)", sec, INK, topleft=(x, y))
-        y += sec + 8
+        y += sec + 6
         ok = self.server_state == "ok" and not self.mods_on
         self._button(pygame.Rect(x, y, int(w * 0.3), row), "Host a match", self.host, True, ok)
         cx = x + int(w * 0.36)
         self._text("or join with a code:", ph * 0.026, MUTED, midleft=(cx, y + row / 2))
         self._field("code", pygame.Rect(cx + int(w * 0.25), y, int(w * 0.17), row))
         self._button(pygame.Rect(x + int(w * 0.8), y, int(w * 0.2), row), "Join", self.join, False, ok)
-        y += row + 10
+        y += row + 8
         self._button(pygame.Rect(x, y, int(w * 0.3), row), "Public matches", self.open_matches, False,
                      self.server_state == "ok")
-        self._text("Find open matches anyone can join, and search them by name.", ph * 0.022, MUTED,
-                   midleft=(x + int(w * 0.33), y + row / 2))
+        self._button(pygame.Rect(x + int(w * 0.33), y, int(w * 0.3), row), "Play with bots",
+                     lambda: self.host(bots=[{"team": 1, "level": "normal"}]), False, ok)
+        self._text("Bot matches earn points but not rank.", ph * 0.022, MUTED,
+                   midleft=(x + int(w * 0.66), y + row / 2))
         y += row + 6
         name_hint = (f"You'll play as {self.user}." if self.logged_in else
                      "Not logged in: you'll play as a guest" +
@@ -716,14 +865,51 @@ class Online:
         else:
             self._text(name_hint, ph * 0.022, MUTED, topleft=(x, y))
 
-        if self.message:
-            self._text(self.message, ph * 0.028, self.message_color, midbottom=(p.centerx, p.bottom - ph * 0.13))
-        bh = max(34, int(ph * 0.055))
-        self._button(pygame.Rect(p.centerx - int(70 * grow), p.bottom - int(ph * 0.05) - bh, int(140 * grow), bh),
-                     "Back", self.app.open_menu)
-        self._text("Tab: next box   Enter: confirm   H: host   B: public matches   Esc: back", ph * 0.022, MUTED,
-                   midbottom=(p.centerx, p.bottom - 8))
-        self.focus = focus
+    # ---- popups (any screen) --------------------------------------------------------------------
+
+    def draw_popups(self) -> None:
+        """Reward messages in the corner and a friend's invite at the top."""
+        scr = self.app.screen
+        sw = scr.get_width()
+        self.popup_hits = []
+        y = 12
+        for text, color, _until in self.toasts:
+            img = self.app.renderer.font(22).render(text, True, WHITE)
+            r = img.get_rect(topright=(sw - 22, y + 8))
+            bg = r.inflate(24, 14)
+            pygame.draw.rect(scr, color, bg, border_radius=bg.h // 2)
+            scr.blit(img, r)
+            y = bg.bottom + 6
+        if self.invite:
+            inv = self.invite
+            w = min(sw - 40, 560)
+            box = pygame.Rect((sw - w) // 2, 10, w, 92)
+            pygame.draw.rect(scr, WHITE, box, border_radius=14)
+            pygame.draw.rect(scr, ACCENT, box, 3, border_radius=14)
+            self._text(f"{inv.get('from')} invited you to \"{inv.get('match', 'a match')}\"", 24, INK,
+                       midtop=(box.centerx, box.y + 12))
+            bw = 150
+            join = pygame.Rect(box.centerx - bw - 8, box.bottom - 44, bw, 34)
+            no = pygame.Rect(box.centerx + 8, box.bottom - 44, bw, 34)
+            ok = not self.mods_on
+            for r, label, primary, action in ((join, "Join (J)", True, self.accept_invite),
+                                              (no, "No thanks", False, self.dismiss_invite)):
+                pygame.draw.rect(scr, (ACCENT if primary else (232, 236, 228)) if ok or not primary else
+                                 (225, 228, 222), r, border_radius=r.h // 2)
+                self._text(label, 18, WHITE if primary and ok else INK, center=r.center)
+                if ok or not primary:
+                    self.popup_hits.append((r, action))
+            self.popup_hits.append((box, lambda: None))
+
+    def popup_click(self, pos) -> bool:
+        for rect, action in getattr(self, "popup_hits", []):
+            if rect.collidepoint(pos):
+                action()
+                return True
+        return False
+
+    def dismiss_invite(self) -> None:
+        self.invite = None
 
     # ---- Lobby ----------------------------------------------------------------------------------
 
@@ -760,12 +946,29 @@ class Online:
                         ("  - host" if pl["id"] == room["host"] else "")
                     pygame.draw.circle(self.app.screen, TEAM_COLORS[team][j][0], (r.x + 16, r.centery), r.h * 0.22)
                     self._text(name, row_h * 0.5, INK, midleft=(r.x + 32, r.centery))
+                    right = r.right - 8
+                    if pl.get("bot") and host:
+                        xr = pygame.Rect(right - row_h + 8, r.y + 4, row_h - 8, row_h - 8)
+                        self._button(xr, "x", lambda pid=pl["id"]: self.send({"t": "remove_bot", "id": pid}))
+                        right = xr.x - 6
+                    if pl.get("rank"):
+                        self.hub.rank_pill(pl["rank"], row_h * 0.34, midright=(right, r.centery))
+                elif host:
+                    self._text(f"+ add a {self.bot_level} bot", row_h * 0.42, ACCENT, midleft=(r.x + 32, r.centery))
+                    self.hits.append((r, lambda t=team: self.send({"t": "add_bot", "team": t,
+                                                                   "level": self.bot_level})))
                 else:
                     self._text("empty", row_h * 0.42, (170, 176, 166), midleft=(r.x + 32, r.centery))
         y = top + ph * 0.05 + 4 * (row_h + 6) + 6
         bw = int(200 * grow)
         self._button(pygame.Rect(p.centerx - bw // 2, y, bw, row_h), "Switch team",
                      lambda: self.send({"t": "team", "team": 1 - self.my_team()}))
+        if host:
+            self._button(pygame.Rect(p.centerx - bw // 2 - bw - 12, y, bw, row_h),
+                         f"Bot level: {self.bot_level.capitalize()}", self.cycle_bot_level)
+        if self.logged_in:
+            self._button(pygame.Rect(p.centerx + bw // 2 + 12, y, bw, row_h), "Invite friends",
+                         self.toggle_lobby_friends, self.lobby_friends)
         y += row_h + int(ph * 0.03)
 
         # settings
@@ -813,7 +1016,48 @@ class Online:
         self._button(pygame.Rect(p.centerx + 8, by, bw, bh), "Leave", self.leave)
         hint = "Click a setting to change it   Enter: start   Esc: leave" if host else "Esc: leave"
         self._text(hint, ph * 0.022, MUTED, midbottom=(p.centerx, p.bottom - 8))
+        if self.lobby_friends:
+            self.draw_lobby_friends(p)
         self.focus = focus
+
+    def cycle_bot_level(self) -> None:
+        from .bots import LEVELS
+        self.bot_level = LEVELS[(LEVELS.index(self.bot_level) + 1) % len(LEVELS)]
+
+    def toggle_lobby_friends(self) -> None:
+        self.lobby_friends = not self.lobby_friends
+        if self.lobby_friends:
+            self.hub.load_friends()
+
+    def draw_lobby_friends(self, p) -> None:
+        """A list of your friends to invite, over the lobby's settings."""
+        ph = p.h
+        row = max(30, int(ph * 0.048))
+        friends = [f for f in self.hub.friends["friends"] if f["online"]]
+        shown = max(1, min(len(friends), 6))
+        box = pygame.Rect(0, 0, int(p.w * 0.56), int(ph * 0.1) + shown * (row + 6) + row + 24)
+        box.midtop = (p.centerx, p.y + int(ph * 0.42))
+        pygame.draw.rect(self.app.screen, WHITE, box, border_radius=14)
+        pygame.draw.rect(self.app.screen, ACCENT, box, 3, border_radius=14)
+        self.hits.insert(0, (box, lambda: None))  # clicks inside don't reach the lobby underneath
+        self._text("Invite friends", ph * 0.032, INK, midtop=(box.centerx, box.y + 12))
+        y = box.y + 12 + ph * 0.05
+        if not friends:
+            self._text("None of your friends are online right now." if self.hub.friends_loaded else "Loading...",
+                       ph * 0.024, MUTED, midtop=(box.centerx, y + 10))
+        in_room = {pl["name"] for pl in (self.room or {}).get("players", [])}
+        for f in friends[:shown]:
+            here = f["name"] in in_room
+            self.hub.person_row(pygame.Rect(box.x + 14, y, box.w - 28, row), f,
+                                [("Here" if here else "Invite",
+                                  lambda n=f["name"]: self.send({"t": "invite", "name": n}), not here)],
+                                clickable=False)
+            y += row + 6
+        close = pygame.Rect(0, 0, int(box.w * 0.3), row)
+        close.midbottom = (box.centerx, box.bottom - 12)
+        self._button(close, "Close", self.toggle_lobby_friends)
+        # the overlay's own buttons come first, ahead of the blocker added above
+        self.hits.sort(key=lambda h: 0 if box.contains(h[0]) and h[0] != box else 1)
 
     def _lobby_details(self, p, room, host) -> None:
         """The lobby's top row: the code on the left, the match name and public/private on the right."""
@@ -840,7 +1084,7 @@ class Online:
             bw = int(rw * 0.26)
             self._button(pygame.Rect(rx, ty, bw, bh), "Public" if public else "Private",
                          lambda: self.set_details(public=not public), public)
-            self._text(note + "  (click to change)", ph * 0.022, MUTED, midleft=(rx + bw + 12, ty + bh / 2))
+            self._text(note, ph * 0.022, MUTED, midleft=(rx + bw + 12, ty + bh / 2))
         else:
             self._text(note, ph * 0.024, MUTED, midleft=(rx, ty + bh / 2))
 

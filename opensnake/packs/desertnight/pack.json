@@ -1,0 +1,12 @@
+{
+  "name": "Desert Night",
+  "description": "Dunes under a violet sky. (Loot box pack.)",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#5a4466",
+  "board_dark": "#523d5e",
+  "board_sand": "#7a5a52",
+  "board_sand_dark": "#6f524a",
+  "border": "#3a2a48",
+  "header": "#2a1e36"
+}

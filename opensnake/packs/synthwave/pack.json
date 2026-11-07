@@ -1,0 +1,12 @@
+{
+  "name": "Synthwave",
+  "description": "Neon grid on deep purple. (Loot box pack.)",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#3a1670",
+  "board_dark": "#321262",
+  "board_sand": "#5a1a6e",
+  "board_sand_dark": "#4f1762",
+  "border": "#ff2a6d",
+  "header": "#1a0838"
+}

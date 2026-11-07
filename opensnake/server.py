@@ -11,7 +11,18 @@ HTTP API (JSON):
     POST /api/register  {username, password}     -> {token, username}
     POST /api/login     {username, password}     -> {token, username}
     POST /api/logout    (Authorization: Bearer)  -> {}
-    GET  /api/me        (Authorization: Bearer)  -> {username}
+    GET  /api/me        (Authorization: Bearer)  -> your profile, points, rank and items
+    POST /api/profile   {bio?, avatar?, skin?}   -> your profile
+    GET  /api/users?q=                           -> {users: [...]}            (search by name)
+    GET  /api/users/{name}                       -> a player's profile
+    GET  /api/friends                            -> {friends, incoming, outgoing}
+    POST /api/friends/add     {name}             -> send (or accept) a friend request
+    POST /api/friends/remove  {name}             -> unfriend, decline or cancel
+    POST /api/store/buy       {item}             -> buy a shop skin with snake points
+    POST /api/store/open      {crate}            -> open a loot box: {item, new, refund, points}
+    POST /api/rounds          {fruit}            -> snake points for a finished round
+    GET  /api/categories?q=                      -> community custom speedrun categories
+    POST /api/categories      {def}              -> share a custom category
     GET  /api/info                               -> {server, version, site}
     GET  /api/records                            -> {records: {category: {time_ms, player, date}}}
     GET  /api/leaderboard/{category}             -> {entries: [{player, time_ms, date}]}
@@ -36,9 +47,12 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 from . import __version__
+from . import cosmetics as cos
+from .bots import BOT_NAMES, LEVEL_NAMES, LEVELS
+from .bots import choose as bot_choose
 from .game import DIRS, Game, game_to_state
 from .modes import BUILTIN_MODE_IDS, speed_ms
-from .speedrun import CATEGORY_BY_ID, CUSTOM_PREFIX, verify
+from .speedrun import CATEGORY_BY_ID, CUSTOM_PREFIX, category_from_def, verify
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_WEB = REPO / "web-support" / "build" / "opensnake" / "build" / "web"
@@ -56,6 +70,8 @@ SIZES = {"small": (16, 12), "medium": (20, 16), "large": (28, 22)}
 DEFAULT_SETTINGS = {"size": "medium", "speed": 0.5, "apples": 3, "goal": 0, "modes": []}
 MAX_MATCH_NAME = 32
 MAX_LISTED = 50  # public matches returned per search
+MAX_BIO = 160
+ROUND_GAP = 2.0  # seconds between paid single-player rounds (one account can't farm faster)
 
 
 def clean_match_name(name) -> str:
@@ -78,6 +94,7 @@ class Database:
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript("""
+            BEGIN;
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 salt BLOB NOT NULL, pw BLOB NOT NULL, created TEXT NOT NULL);
@@ -87,8 +104,30 @@ class Database:
                 id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, category TEXT NOT NULL,
                 time_ms INTEGER NOT NULL, run TEXT NOT NULL, created TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runs_cat ON runs(category, time_ms);
+            CREATE TABLE IF NOT EXISTS inventory (
+                user_id INTEGER NOT NULL, item TEXT NOT NULL, created TEXT NOT NULL,
+                PRIMARY KEY (user_id, item));
+            CREATE TABLE IF NOT EXISTS friends (
+                a INTEGER NOT NULL, b INTEGER NOT NULL, accepted INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL,
+                PRIMARY KEY (a, b));  -- a asked b
+            CREATE TABLE IF NOT EXISTS categories (
+                id TEXT PRIMARY KEY, def TEXT NOT NULL, name TEXT NOT NULL, creator INTEGER NOT NULL,
+                created TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS wr_hold (
+                category TEXT PRIMARY KEY, user_id INTEGER NOT NULL, since TEXT NOT NULL, paid INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS ledger (
+                id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, amount INTEGER NOT NULL, reason TEXT NOT NULL,
+                created TEXT NOT NULL);
         """)
-        self.db.commit()
+        # Profile, points and rank columns (added in 1.2): add them to the users table if it's older.
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(users)")}
+        for column, decl in (("points", "INTEGER NOT NULL DEFAULT 0"), ("bio", "TEXT NOT NULL DEFAULT ''"),
+                             ("avatar", "TEXT NOT NULL DEFAULT ''"), ("skin", "TEXT NOT NULL DEFAULT ''"),
+                             ("rp", "INTEGER NOT NULL DEFAULT 0"), ("wins", "INTEGER NOT NULL DEFAULT 0"),
+                             ("losses", "INTEGER NOT NULL DEFAULT 0"), ("draws", "INTEGER NOT NULL DEFAULT 0")):
+            if column not in have:
+                self.db.execute(f"ALTER TABLE users ADD COLUMN {column} {decl}")
+        self.db.commit()  # one write for all of it
 
     def close(self) -> None:
         self.db.close()
@@ -159,15 +198,225 @@ class Database:
                               (user_id, category)).fetchone()
         return row[0]
 
+    # -- snake points
+
+    def add_points(self, user_id: int, amount: int, reason: str) -> int:
+        """Change a balance (logged in the ledger) and return the new balance."""
+        self.db.execute("UPDATE users SET points = MAX(0, points + ?) WHERE id = ?", (amount, user_id))
+        self.db.execute("INSERT INTO ledger (user_id, amount, reason, created) VALUES (?, ?, ?, ?)",
+                        (user_id, amount, reason, now_iso()))
+        self.db.commit()
+        return self.points(user_id)
+
+    def points(self, user_id: int) -> int:
+        row = self.db.execute("SELECT points FROM users WHERE id = ?", (user_id,)).fetchone()
+        return row[0] if row else 0
+
+    def settle_wr_holds(self, now: datetime | None = None) -> list[tuple[str, int, int]]:
+        """Pay world record holders for every full 3 days they've kept a built-in category's WR.
+
+        Returns what was paid: [(category, user id, points)]."""
+        now = now or datetime.now(timezone.utc)
+        paid = []
+        for cat in CATEGORY_BY_ID:
+            best = self.db.execute("SELECT user_id, created FROM runs WHERE category = ? "
+                                   "ORDER BY time_ms, created LIMIT 1", (cat,)).fetchone()
+            if not best:
+                continue
+            hold = self.db.execute("SELECT * FROM wr_hold WHERE category = ?", (cat,)).fetchone()
+            if not hold or hold["user_id"] != best["user_id"]:  # a new holder: count from when they set it
+                self.db.execute("INSERT OR REPLACE INTO wr_hold VALUES (?, ?, ?, 0)",
+                                (cat, best["user_id"], best["created"]))
+                hold = {"user_id": best["user_id"], "since": best["created"], "paid": 0}
+            since = datetime.strptime(hold["since"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            periods = int((now - since).total_seconds() // (cos.WR_HOLD_DAYS * 86400))
+            if periods > hold["paid"]:
+                amount = (periods - hold["paid"]) * cos.WR_HOLD_REWARD
+                self.db.execute("UPDATE wr_hold SET paid = ? WHERE category = ?", (periods, cat))
+                self.add_points(hold["user_id"], amount, f"held the {cat} world record")
+                paid.append((cat, hold["user_id"], amount))
+        self.db.commit()
+        return paid
+
+    # -- profiles
+
+    def user_row(self, name: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM users WHERE name = ?", (name or "",)).fetchone()
+
+    def user_by_id(self, user_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+    def wrs_held(self, user_id: int) -> int:
+        return sum(1 for cat, rec in self.records().items()
+                   if cat in CATEGORY_BY_ID and rec["player"].lower() == self.user_by_id(user_id)["name"].lower())
+
+    def profile(self, row: sqlite3.Row, private: bool = False) -> dict:
+        """What everyone can see about a player (plus points and items for the player themself)."""
+        _i, rank, _c = cos.rank_for(row["rp"])
+        out = {"name": row["name"], "bio": row["bio"], "avatar": row["avatar"] or cos.DEFAULT_AVATAR,
+               "skin": row["skin"], "rp": row["rp"], "rank": rank, "wins": row["wins"], "losses": row["losses"],
+               "draws": row["draws"], "joined": row["created"][:10], "wrs": self.wrs_held(row["id"])}
+        if private:
+            out["points"] = row["points"]
+            out["inventory"] = self.inventory(row["id"])
+        return out
+
+    def set_profile(self, user_id: int, data: dict) -> None:
+        if "bio" in data:
+            bio = " ".join("".join(ch for ch in str(data["bio"]) if ch.isprintable()).split())[:MAX_BIO]
+            self.db.execute("UPDATE users SET bio = ? WHERE id = ?", (bio, user_id))
+        if "avatar" in data:
+            icon, color = cos.parse_avatar(data["avatar"])
+            self.db.execute("UPDATE users SET avatar = ? WHERE id = ?", (f"{icon}:{color}", user_id))
+        if "skin" in data:
+            skin = str(data["skin"] or "")
+            if skin and f"skin:{skin}" not in self.inventory(user_id):
+                raise ValueError("You don't own that skin.")
+            self.db.execute("UPDATE users SET skin = ? WHERE id = ?", (skin, user_id))
+        self.db.commit()
+
+    def search_users(self, query: str, limit: int = 20) -> list[sqlite3.Row]:
+        q = "%" + query.replace("\\", "").replace("%", "").replace("_", "\\_") + "%"
+        return self.db.execute("SELECT * FROM users WHERE name LIKE ? ESCAPE '\\' "
+                               "ORDER BY LENGTH(name), name LIMIT ?", (q, limit)).fetchall()
+
+    # -- items
+
+    def inventory(self, user_id: int) -> list[str]:
+        return [r[0] for r in self.db.execute("SELECT item FROM inventory WHERE user_id = ? ORDER BY created",
+                                              (user_id,))]
+
+    def grant(self, user_id: int, item: str) -> bool:
+        """Give an item; False if they already had it."""
+        cur = self.db.execute("INSERT OR IGNORE INTO inventory VALUES (?, ?, ?)", (user_id, item, now_iso()))
+        self.db.commit()
+        return cur.rowcount == 1
+
+    def buy(self, user_id: int, item: str) -> int:
+        kind, _, key = item.partition(":")
+        skin = cos.SKIN_BY_ID.get(key) if kind == "skin" else None
+        if not skin or not skin.shop:
+            raise ValueError("That isn't sold in the shop.")
+        if item in self.inventory(user_id):
+            raise ValueError("You already own that.")
+        if self.points(user_id) < skin.price:
+            raise ValueError("Not enough snake points.")
+        self.grant(user_id, item)
+        return self.add_points(user_id, -skin.price, f"bought {item}")
+
+    def open_crate(self, user_id: int, crate_id: str, rng=random) -> dict:
+        crate = cos.CRATE_BY_ID.get(crate_id)
+        if not crate:
+            raise ValueError("Unknown loot box.")
+        if self.points(user_id) < crate.price:
+            raise ValueError("Not enough snake points.")
+        self.add_points(user_id, -crate.price, f"opened {crate_id}")
+        item = cos.roll(crate, rng)
+        new = self.grant(user_id, item)
+        refund = 0 if new else cos.DUPLICATE_REFUND[cos.item_rarity(item)]
+        balance = self.add_points(user_id, refund, f"duplicate {item}") if refund else self.points(user_id)
+        return {"item": item, "new": new, "refund": refund, "points": balance}
+
+    # -- friends
+
+    def friendship(self, me: int, other: int) -> str:
+        """none / friends / outgoing (I asked) / incoming (they asked)."""
+        row = self.db.execute("SELECT a, accepted FROM friends WHERE (a = ? AND b = ?) OR (a = ? AND b = ?)",
+                              (me, other, other, me)).fetchone()
+        if not row:
+            return "none"
+        if row["accepted"]:
+            return "friends"
+        return "outgoing" if row["a"] == me else "incoming"
+
+    def add_friend(self, me: int, other: int) -> str:
+        if me == other:
+            raise ValueError("That's you!")
+        state = self.friendship(me, other)
+        if state == "incoming":  # they already asked: accept
+            self.db.execute("UPDATE friends SET accepted = 1 WHERE a = ? AND b = ?", (other, me))
+            state = "friends"
+        elif state == "none":
+            self.db.execute("INSERT INTO friends VALUES (?, ?, 0, ?)", (me, other, now_iso()))
+            state = "outgoing"
+        self.db.commit()
+        return state
+
+    def remove_friend(self, me: int, other: int) -> None:
+        self.db.execute("DELETE FROM friends WHERE (a = ? AND b = ?) OR (a = ? AND b = ?)", (me, other, other, me))
+        self.db.commit()
+
+    def friends(self, me: int) -> dict:
+        out = {"friends": [], "incoming": [], "outgoing": []}
+        rows = self.db.execute("SELECT * FROM friends WHERE a = ? OR b = ?", (me, me)).fetchall()
+        for r in rows:
+            other = r["b"] if r["a"] == me else r["a"]
+            key = "friends" if r["accepted"] else ("outgoing" if r["a"] == me else "incoming")
+            out[key].append(other)
+        return out
+
+    # -- versus results
+
+    def record_match(self, user_id: int, result: str, ranked: bool, points: int) -> dict:
+        """Points (and, against other people, rank points) for a finished versus match."""
+        delta = {"win": cos.RP_WIN, "loss": cos.RP_LOSS, "draw": cos.RP_DRAW}[result] if ranked else 0
+        column = {"win": "wins", "loss": "losses", "draw": "draws"}[result]
+        if ranked:
+            self.db.execute(f"UPDATE users SET rp = MAX(0, rp + ?), {column} = {column} + 1 WHERE id = ?",
+                            (delta, user_id))
+        balance = self.add_points(user_id, points, f"versus {result}")
+        rp = self.user_by_id(user_id)["rp"]
+        return {"points": points, "balance": balance, "rp": rp, "rp_change": delta, "rank": cos.rank_for(rp)[1]}
+
+    # -- community categories
+
+    def share_category(self, definition: dict, user_id: int) -> str:
+        """Add a custom category to the community list (the first to share it is its creator)."""
+        cat = category_from_def(definition)
+        if any(m not in BUILTIN_MODE_IDS for m in cat.modes):
+            raise ValueError("Categories using mods can't be shared.")
+        clean = {k: definition.get(k) for k in ("w", "h", "modes", "goal", "fruit_count", "tick_ms", "fruit")}
+        clean.update(id=cat.id, name=cat.name)
+        self.db.execute("INSERT OR IGNORE INTO categories VALUES (?, ?, ?, ?, ?)",
+                        (cat.id, json.dumps(clean), cat.name, user_id, now_iso()))
+        self.db.commit()
+        return cat.id
+
+    def community(self, query: str = "", limit: int = 100) -> list[dict]:
+        rows = self.db.execute("""
+            SELECT categories.*, users.name AS creator_name,
+                   (SELECT COUNT(DISTINCT user_id) FROM runs WHERE runs.category = categories.id) AS players
+            FROM categories JOIN users ON users.id = categories.creator""").fetchall()
+        words = query.lower().split()
+        out = []
+        for r in rows:
+            text = f"{r['name']} {r['creator_name']}".lower()
+            if not all(w in text for w in words):
+                continue
+            best = self.leaderboard(r["id"], 1)
+            out.append({"id": r["id"], "name": r["name"], "def": json.loads(r["def"]), "creator": r["creator_name"],
+                        "created": r["created"][:10], "players": r["players"], "wr": best[0] if best else None})
+        out.sort(key=lambda c: (-c["players"], c["name"].lower()))
+        return out[:limit]
+
 
 # ---- versus rooms ---------------------------------------------------------------------
 
 class Player:
-    def __init__(self, ws: web.WebSocketResponse, pid: int, name: str):
+    def __init__(self, ws: web.WebSocketResponse | None, pid: int, name: str, user_id: int | None = None,
+                 bot: str | None = None):
         self.ws, self.id, self.name = ws, pid, name
+        self.user_id = user_id   # None for guests and bots
+        self.bot = bot           # difficulty, for computer players
         self.team = 0
         self.room: Room | None = None
         self.snake = -1  # index in the running game
+        self.rank = "Bot" if bot else ""
+        self.avatar = ""
+
+    @property
+    def human(self) -> bool:
+        return self.bot is None
 
 
 class Room:
@@ -186,9 +435,38 @@ class Room:
 
     def info(self) -> dict:
         return {"t": "room", "code": self.code, "host": self.host.id, "state": self.state,
-                "name": self.name, "public": self.public,
-                "settings": self.settings, "players": [{"id": p.id, "name": p.name, "team": p.team}
-                                                       for p in self.players]}
+                "name": self.name, "public": self.public, "settings": self.settings,
+                "players": [{"id": p.id, "name": p.name, "team": p.team, "bot": p.bot, "rank": p.rank,
+                             "avatar": p.avatar} for p in self.players]}
+
+    @property
+    def humans(self) -> list[Player]:
+        return [p for p in self.players if p.human]
+
+    def add_bot(self, team, level) -> str | None:
+        if self.state != "lobby":
+            return "Bots can only join in the lobby."
+        if team not in (0, 1) or level not in LEVELS:
+            return "Unknown team or bot level."
+        if sum(1 for q in self.players if q.team == team) >= MAX_TEAM:
+            return f"That team is full ({MAX_TEAM} players)."
+        taken = {q.name for q in self.players}
+        name = next((f"{n} (bot)" for n in random.sample(BOT_NAMES, len(BOT_NAMES)) if f"{n} (bot)" not in taken),
+                    "Bot")
+        bot = Player(None, self.server.new_pid(), name, bot=level)
+        bot.rank = f"{LEVEL_NAMES[level]} bot"
+        bot.team, bot.room = team, self
+        self.players.append(bot)
+        return None
+
+    def remove_bot(self, pid) -> str | None:
+        if self.state != "lobby":
+            return "Bots can only leave in the lobby."
+        bot = next((q for q in self.players if q.id == pid and q.bot), None)
+        if not bot:
+            return "No such bot."
+        self.players.remove(bot)
+        return None
 
     def set_details(self, m: dict) -> None:
         """The host's choice of match name and whether it's public."""
@@ -211,7 +489,7 @@ class Room:
     async def broadcast(self, msg: dict) -> None:
         text = json.dumps(msg, separators=(",", ":"))
         for p in list(self.players):
-            if not p.ws.closed:
+            if p.ws is not None and not p.ws.closed:
                 try:
                     await p.ws.send_str(text)
                 except (ConnectionError, RuntimeError):
@@ -229,8 +507,8 @@ class Room:
         p.room = None
         if self.game and 0 <= p.snake < len(self.game.snakes):
             self.game.snakes[p.snake].dead = True  # leaving mid-match knocks your snake out
-        if self.host is p and self.players:
-            self.host = self.players[0]
+        if self.host is p and self.humans:
+            self.host = self.humans[0]
 
     def set_team(self, p: Player, team: int) -> str | None:
         if self.state != "lobby":
@@ -287,7 +565,13 @@ class Room:
         await self.broadcast({"t": "countdown", "n": 0})
         loop = asyncio.get_running_loop()
         deadline = loop.time()
-        while not g.over and self.players:
+        bot_rng = random.Random()
+        while not g.over and self.humans:
+            for p in self.players:
+                if p.bot and p.snake >= 0:
+                    d = bot_choose(g, p.snake, bot_rng, p.bot)
+                    if d:
+                        g.input_for(p.snake, d)
             g.step()
             state = game_to_state(g)
             g.events.clear()
@@ -296,10 +580,24 @@ class Room:
             await asyncio.sleep(max(0.0, deadline - loop.time()))
         self.state = "over"
         await self.broadcast({"t": "over", "winner": g.winner, "scores": [g.team_score(0), g.team_score(1)]})
+        await self.reward(g)
         await self.broadcast(self.info())
 
+    async def reward(self, g: Game) -> None:
+        """Snake points for everyone with an account, and rank points if they played other people."""
+        ranked = len(self.humans) >= 2
+        for p in self.players:
+            if p.user_id is None or not (0 <= p.snake < len(g.snakes)):
+                continue
+            result = "draw" if g.winner is None else ("win" if g.winner == p.team else "loss")
+            points = cos.MATCH_PLAYED + cos.MATCH_PER_FRUIT * g.snakes[p.snake].score + \
+                (cos.MATCH_WIN if result == "win" else 0)
+            info = self.server.db.record_match(p.user_id, result, ranked, points)
+            p.rank = info["rank"]
+            await self.send(p, {"t": "reward", "result": result, "ranked": ranked, **info})
+
     async def send(self, p: Player, msg: dict) -> None:
-        if not p.ws.closed:
+        if p.ws is not None and not p.ws.closed:
             await p.ws.send_str(json.dumps(msg, separators=(",", ":")))
 
 
@@ -311,6 +609,13 @@ class Server:
         self.web_dir = web_dir if web_dir and (web_dir / "index.html").is_file() else None
         self.rooms: dict[str, Room] = {}
         self.next_pid = 1
+        self.connected: dict[int, set[Player]] = {}  # account id -> its open connections (who's online)
+        self.last_round: dict[int, float] = {}       # account id -> when its last round was paid
+        self.settle_task: asyncio.Task | None = None
+
+    def new_pid(self) -> int:
+        self.next_pid += 1
+        return self.next_pid - 1
 
     # -- helpers
     @staticmethod
@@ -336,6 +641,7 @@ class Server:
 
     def app(self) -> web.Application:
         app = web.Application(client_max_size=4 * 1024 * 1024)
+        app.on_startup.append(self.startup)
         app.on_cleanup.append(self.shutdown)
         app.on_response_prepare.append(self.revalidate)
         r = app.router
@@ -348,6 +654,17 @@ class Server:
         r.add_get("/api/leaderboard/{category}", self.leaderboard)
         r.add_post("/api/runs", self.submit_run)
         r.add_get("/api/matches", self.matches)
+        r.add_post("/api/profile", self.set_profile)
+        r.add_get("/api/users", self.search_users)
+        r.add_get("/api/users/{name}", self.user_profile)
+        r.add_get("/api/friends", self.friends)
+        r.add_post("/api/friends/add", self.add_friend)
+        r.add_post("/api/friends/remove", self.remove_friend)
+        r.add_post("/api/store/buy", self.buy)
+        r.add_post("/api/store/open", self.open_crate)
+        r.add_post("/api/rounds", self.finish_round)
+        r.add_get("/api/categories", self.categories)
+        r.add_post("/api/categories", self.share_category)
         r.add_get("/ws", self.websocket)
         if self.web_dir:
             r.add_get("/", self.index)
@@ -361,8 +678,17 @@ class Server:
         The game files also get a new name with every build (see web-support/build.sh)."""
         response.headers.setdefault("Cache-Control", "no-cache")
 
+    async def startup(self, app: web.Application) -> None:
+        async def settle_hourly():
+            while True:
+                self.db.settle_wr_holds()
+                await asyncio.sleep(3600)
+        self.settle_task = asyncio.create_task(settle_hourly())
+
     async def shutdown(self, app: web.Application) -> None:
         """Stop running matches and close the database (Windows can't delete open files)."""
+        if self.settle_task:
+            self.settle_task.cancel()
         for room in list(self.rooms.values()):
             if room.task:
                 room.task.cancel()
@@ -402,7 +728,141 @@ class Server:
         user = self.db.user_for(self.token(request))
         if not user:
             return self.error("Not logged in.", 401)
-        return web.json_response({"username": user["name"]})
+        self.db.settle_wr_holds()
+        return web.json_response({"username": user["name"], **self.db.profile(self.db.user_by_id(user["id"]), True)})
+
+    def summary(self, row: sqlite3.Row) -> dict:
+        """A player as listed in searches and friend lists."""
+        _i, rank, _c = cos.rank_for(row["rp"])
+        conns = self.connected.get(row["id"], ())
+        playing = next((p.room for p in conns if p.room), None)
+        return {"name": row["name"], "avatar": row["avatar"] or cos.DEFAULT_AVATAR, "rank": rank, "rp": row["rp"],
+                "online": bool(conns), "in_match": bool(playing)}
+
+    async def set_profile(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to edit your profile.", 401)
+        try:
+            self.db.set_profile(user["id"], await self.body(request))
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response(self.db.profile(self.db.user_by_id(user["id"]), True))
+
+    async def search_users(self, request: web.Request) -> web.Response:
+        query = request.query.get("q", "").strip()[:20]
+        rows = self.db.search_users(query) if query else []
+        return web.json_response({"users": [self.summary(r) for r in rows]})
+
+    async def user_profile(self, request: web.Request) -> web.Response:
+        row = self.db.user_row(request.match_info["name"])
+        if not row:
+            return self.error("No player with that name.", 404)
+        me = self.db.user_for(self.token(request))
+        return web.json_response({**self.db.profile(row), **self.summary(row),
+                                  "friend": self.db.friendship(me["id"], row["id"]) if me else "none"})
+
+    async def friends(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to see your friends.", 401)
+        lists = self.db.friends(user["id"])
+        out = {key: [self.summary(self.db.user_by_id(uid)) for uid in ids] for key, ids in lists.items()}
+        out["friends"].sort(key=lambda f: (not f["online"], f["name"].lower()))
+        return web.json_response(out)
+
+    async def friend_target(self, request: web.Request):
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return None, None, self.error("Log in to add friends.", 401)
+        other = self.db.user_row(str((await self.body(request)).get("name", "")))
+        if not other:
+            return None, None, self.error("No player with that name.", 404)
+        return user, other, None
+
+    async def add_friend(self, request: web.Request) -> web.Response:
+        user, other, err = await self.friend_target(request)
+        if err:
+            return err
+        try:
+            state = self.db.add_friend(user["id"], other["id"])
+        except ValueError as e:
+            return self.error(str(e))
+        await self.notify(other["id"], {"t": "friends"})  # refresh their list if it's open
+        return web.json_response({"friend": state})
+
+    async def remove_friend(self, request: web.Request) -> web.Response:
+        user, other, err = await self.friend_target(request)
+        if err:
+            return err
+        self.db.remove_friend(user["id"], other["id"])
+        await self.notify(other["id"], {"t": "friends"})
+        return web.json_response({"friend": "none"})
+
+    async def notify(self, user_id: int, msg: dict) -> int:
+        """Send a message to every open connection of an account; returns how many got it."""
+        sent = 0
+        for p in list(self.connected.get(user_id, ())):
+            if not p.ws.closed:
+                try:
+                    await p.ws.send_str(json.dumps(msg))
+                    sent += 1
+                except (ConnectionError, RuntimeError):
+                    pass
+        return sent
+
+    # -- store
+    async def buy(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to use the store.", 401)
+        item = str((await self.body(request)).get("item", ""))
+        try:
+            balance = self.db.buy(user["id"], item)
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response({"item": item, "points": balance})
+
+    async def open_crate(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to open loot boxes.", 401)
+        try:
+            result = self.db.open_crate(user["id"], str((await self.body(request)).get("crate", "")))
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response(result)
+
+    async def finish_round(self, request: web.Request) -> web.Response:
+        """Snake points for a finished single-player round (sent by the game when you die or win)."""
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to earn snake points.", 401)
+        try:
+            fruit = max(0, int((await self.body(request)).get("fruit", 0)))
+        except (TypeError, ValueError):
+            return self.error("Expected a fruit count.")
+        now = asyncio.get_running_loop().time()
+        if now - self.last_round.get(user["id"], -1e9) < ROUND_GAP:
+            return web.json_response({"earned": 0, "points": self.db.points(user["id"])})
+        self.last_round[user["id"]] = now
+        earned = cos.round_points(fruit)
+        return web.json_response({"earned": earned, "points": self.db.add_points(user["id"], earned, "round")})
+
+    # -- community categories
+    async def categories(self, request: web.Request) -> web.Response:
+        return web.json_response({"categories": self.db.community(request.query.get("q", "").strip()[:40])})
+
+    async def share_category(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        if not user:
+            return self.error("Log in to share categories.", 401)
+        definition = (await self.body(request)).get("def")
+        try:
+            cid = self.db.share_category(definition if isinstance(definition, dict) else {}, user["id"])
+        except (KeyError, TypeError, ValueError) as e:
+            return self.error(f"Can't share that category: {e}")
+        return web.json_response({"id": cid})
 
     # -- world records
     async def records(self, request: web.Request) -> web.Response:
@@ -435,10 +895,22 @@ class Server:
         self.db.add_run(user["id"], category, time_ms, run)
         board = self.db.leaderboard(category, 1000)
         rank = next((i + 1 for i, e in enumerate(board) if e["player"].lower() == user["name"].lower()), None)
+        pb = before is None or time_ms < before
+        wr = wr_before is None or time_ms < wr_before["time_ms"]
+        earned = 0
+        if category in CATEGORY_BY_ID:  # community categories keep their records but pay nothing
+            earned = (cos.PR_REWARD if pb else 0) + (cos.WR_REWARD if wr else 0)
+            if earned:
+                self.db.add_points(user["id"], earned, f"{'WR' if wr else 'PR'} in {category}")
+            self.db.settle_wr_holds()
+        elif definition:
+            try:  # the first person to submit a run in a custom category is its creator
+                self.db.share_category(definition, user["id"])
+            except (KeyError, TypeError, ValueError):
+                pass
         return web.json_response({
-            "valid": True, "message": message, "time_ms": time_ms, "rank": rank,
-            "pb": before is None or time_ms < before,
-            "wr": wr_before is None or time_ms < wr_before["time_ms"]})
+            "valid": True, "message": message, "time_ms": time_ms, "rank": rank, "pb": pb, "wr": wr,
+            "earned": earned, "points": self.db.points(user["id"])})
 
     # -- versus multiplayer
     async def matches(self, request: web.Request) -> web.Response:
@@ -468,8 +940,11 @@ class Server:
         user = self.db.user_for(request.query.get("token"))
         guest = re.sub(r"[^A-Za-z0-9_ -]", "", request.query.get("name", ""))[:16].strip()
         name = user["name"] if user else (guest or f"Guest{random.randint(100, 999)}")
-        player = Player(ws, self.next_pid, name)
-        self.next_pid += 1
+        player = Player(ws, self.new_pid(), name, user["id"] if user else None)
+        if user:
+            row = self.db.user_by_id(user["id"])
+            player.rank, player.avatar = cos.rank_for(row["rp"])[1], row["avatar"] or cos.DEFAULT_AVATAR
+            self.connected.setdefault(user["id"], set()).add(player)
         await ws.send_str(json.dumps({"t": "welcome", "id": player.id, "name": name, "account": bool(user)}))
         try:
             async for msg in ws:
@@ -483,6 +958,11 @@ class Server:
                     await self.on_message(player, data)
         finally:
             await self.leave(player)
+            if player.user_id is not None:
+                conns = self.connected.get(player.user_id, set())
+                conns.discard(player)
+                if not conns:
+                    self.connected.pop(player.user_id, None)
         return ws
 
     async def on_message(self, p: Player, m: dict) -> None:
@@ -503,6 +983,9 @@ class Server:
             room.set_details(m)
             self.rooms[room.code] = room
             room.add(p)
+            for b in (m.get("bots") or [])[:2 * MAX_TEAM - 1] if isinstance(m.get("bots"), list) else []:
+                if isinstance(b, dict):
+                    room.add_bot(b.get("team"), b.get("level", "normal"))
         elif t == "join":
             await self.leave(p)
             room = self.rooms.get(str(m.get("code", "")).strip().upper())
@@ -517,6 +1000,8 @@ class Server:
         elif t == "leave":
             await self.leave(p)
             room = None
+        elif t == "hello":  # just connecting (shows you as online to friends)
+            return
         elif not room:
             err = "You're not in a match."
         elif t == "team":
@@ -528,6 +1013,18 @@ class Server:
                 err = "Settings can only change in the lobby."
             else:
                 room.update_settings(m.get("settings") or {})
+        elif t == "invite":
+            err = await self.invite(p, room, str(m.get("name", "")))
+            if not err:
+                await p.ws.send_str(json.dumps({"t": "invited", "name": m.get("name")}))
+                return
+        elif t in ("add_bot", "remove_bot"):
+            if p is not room.host:
+                err = "Only the host can add or remove bots."
+            elif t == "add_bot":
+                err = room.add_bot(m.get("team"), m.get("level", "normal"))
+            else:
+                err = room.remove_bot(m.get("id"))
         elif t == "details":
             if p is not room.host:
                 err = "Only the host can rename the match or make it public."
@@ -544,12 +1041,24 @@ class Server:
         if room and room.code in self.rooms:
             await room.broadcast(room.info())
 
+    async def invite(self, p: Player, room: Room, name: str) -> str | None:
+        """Invite a friend to your match: it pops up wherever they are in the game."""
+        if p.user_id is None:
+            return "Log in to invite friends."
+        friend = self.db.user_row(name)
+        if not friend or self.db.friendship(p.user_id, friend["id"]) != "friends":
+            return "You can only invite your friends."
+        if room.state != "lobby":
+            return "Invites can only be sent from the lobby."
+        sent = await self.notify(friend["id"], {"t": "invite", "from": p.name, "code": room.code, "match": room.name})
+        return None if sent else f"{friend['name']} isn't online."
+
     async def leave(self, p: Player) -> None:
         room = p.room
         if not room:
             return
         room.remove(p)
-        if not room.players:
+        if not room.humans:  # bots don't keep a match going on their own
             self.rooms.pop(room.code, None)
             if room.task:
                 room.task.cancel()

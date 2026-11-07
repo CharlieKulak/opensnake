@@ -60,7 +60,12 @@ class Category:
 CATEGORIES = [
     Category("sprint10", "Sprint 10", "Eat 10 apples on a 10 x 9 board.", 10, 9, goal=10),
     Category("sprint25", "Sprint 25", "Eat 25 apples on a 10 x 9 board.", 10, 9, goal=25),
-    Category("rush", "Apple Rush", "5 apples at a time on a big board. Eat 30.", 17, 15, goal=30, fruit_count=5),
+    # (id "rush" from when it was called Apple Rush, so its records carry over)
+    Category("rush", "Sprint 30", "5 apples at a time on a big board. Eat 30.", 17, 15, goal=30, fruit_count=5),
+    Category("sprint50", "Sprint 50", "Eat 50 apples on a 12 x 11 board.", 12, 11, goal=50),
+    Category("marathon", "Marathon", "3 apples at a time on a big board. Eat 100.", 17, 15, goal=100,
+             fruit_count=3),
+    Category("blitz", "Blitz", "Top speed from the first move. Eat 15.", 10, 9, goal=15, tick_ms=45),
     Category("accelerate", "Accelerate", "Starts slow, gets faster with every apple. Eat 30.",
              10, 9, goal=30, tick_ms=170, accel=4),
     Category("fullboard", "Full Board", "Fill every cell of an 8 x 5 board.", 8, 5, goal=None, tick_ms=110),
@@ -71,6 +76,22 @@ CATEGORIES = [
              10, 9, ("twin",), goal=15),
     Category("minefield", "Minefield", "Minesweeper mode: avoid the hidden mines. Eat 15.",
              12, 11, ("minesweeper",), goal=15),
+    Category("turbo", "Turbo", "Accelerate, but harder: faster sooner, down to top speed. Eat 40.",
+             12, 11, goal=40, tick_ms=150, accel=5, min_tick_ms=40),
+    Category("wrap", "Wrap Run", "Borderless mode: leave one side, come back on the other. Eat 20.",
+             12, 11, ("borderless",), goal=20),
+    Category("poison", "Poison Path", "Poison mode: half the fruit is poison and it swaps. Eat 15.",
+             12, 11, ("poison",), goal=15),
+    Category("gates", "Gate Runner", "Gate mode: time your runs through the gates. Eat 15.",
+             12, 11, ("gate",), goal=15),
+    Category("lightsout", "Lights Out", "Light mode: only your head lights the way. Eat 15.",
+             12, 11, ("light",), goal=15),
+    Category("dimension", "Dimension Drift", "Dimension mode: eating flips which walls are solid. Eat 15.",
+             12, 11, ("dimension",), goal=15),
+    Category("swiss", "Swiss Sprint", "Cheese mode: slither through the holes in your body. Eat 20.",
+             10, 9, ("cheese",), goal=20),
+    Category("statues", "Statue Garden", "Statue mode: eating turns your body to stone. Eat 15.",
+             12, 11, ("statue",), goal=15),
 ]
 CATEGORY_BY_ID = {c.id: c for c in CATEGORIES}
 

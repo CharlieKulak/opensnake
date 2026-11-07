@@ -1,0 +1,12 @@
+{
+  "name": "Arctic",
+  "description": "Snow and pale blue ice. (Loot box pack.)",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#eef7fd",
+  "board_dark": "#e1f0fa",
+  "board_sand": "#dfe9ef",
+  "board_sand_dark": "#d3dee5",
+  "border": "#8fc6e8",
+  "header": "#0277bd"
+}

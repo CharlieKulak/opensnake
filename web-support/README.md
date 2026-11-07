@@ -8,7 +8,9 @@ server**, which serves the game and adds the online features:
 - **Site world records**: logged-in players' speedrun times go on this site's
   own leaderboards. Every run is replayed by the server to check the time
   before it counts.
-- **Versus**: 1v1 up to 4v4 matches. One player hosts and gets a 4-letter
+- **Snake points, the store, profiles, friends, ranks and community
+  categories**: all kept per site, like the leaderboards.
+- **Versus**: 1v1 up to 4v4 matches, with or without bots. One player hosts and gets a 4-letter
   code, others join with it. Hosts can name a match and make it public, so
   anyone can find it under **Public matches** and search for it. Browser and
   desktop players can play together.
@@ -182,6 +184,11 @@ Everything is in one SQLite file, `web-support/data/opensnake.db`:
 
 - accounts (usernames and salted, hashed passwords), login sessions
 - every verified speedrun run, used for the leaderboards and world records
+- profiles, snake points (with a ledger of every change), owned skins and
+  packs, friends, ranks and shared community categories
+
+Updating from 1.1 adds the new tables and columns to an existing file
+automatically, keeping everyone's accounts and records.
 
 Back up that file to keep your players' accounts and records. Delete it (with
 the server stopped) to start fresh.

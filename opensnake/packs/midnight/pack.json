@@ -1,0 +1,12 @@
+{
+  "name": "Midnight",
+  "description": "Deep navy night with cold cyan accents. (Loot box pack.)",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#26335a",
+  "board_dark": "#202c4f",
+  "board_sand": "#33415f",
+  "board_sand_dark": "#2c3955",
+  "border": "#141c33",
+  "header": "#0e1426"
+}

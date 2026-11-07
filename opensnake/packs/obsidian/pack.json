@@ -1,0 +1,12 @@
+{
+  "name": "Obsidian",
+  "description": "Black glass veined with gold. (Loot box pack.)",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#1b1a24",
+  "board_dark": "#15141d",
+  "board_sand": "#2a2620",
+  "board_sand_dark": "#24211b",
+  "border": "#0a0a0f",
+  "header": "#ffd54f"
+}

@@ -168,7 +168,10 @@ fixes the board, speed, modes and goal, so everyone's times are comparable.
 | --- | --- | --- | --- |
 | Sprint 10 | Eat 10 | 10 x 9 | |
 | Sprint 25 | Eat 25 | 10 x 9 | |
-| Apple Rush | Eat 30 | 17 x 15 | 5 apples on the board at once |
+| Sprint 30 | Eat 30 | 17 x 15 | 5 apples on the board at once (was called Apple Rush) |
+| Sprint 50 | Eat 50 | 12 x 11 | |
+| Marathon | Eat 100 | 17 x 15 | 3 apples on the board at once |
+| Blitz | Eat 15 | 10 x 9 | Top speed (45 ms per cell) from the first move |
 | Accelerate | Eat 30 | 10 x 9 | Starts at 170 ms per cell and gets 4 ms faster with every apple |
 | Full Board | Fill every cell | 8 x 5 | 110 ms per cell |
 | Portal Dash | Eat 15 | 12 x 11 | Portal mode |
@@ -176,6 +179,14 @@ fixes the board, speed, modes and goal, so everyone's times are comparable.
 | Key Hunt | Eat 10 | 12 x 11 | Key mode |
 | Twin Turns | Eat 15 | 10 x 9 | Twin mode |
 | Minefield | Eat 15 | 12 x 11 | Minesweeper mode |
+| Turbo | Eat 40 | 12 x 11 | Like Accelerate, but from 150 ms and 5 ms faster per apple, down to 40 ms |
+| Wrap Run | Eat 20 | 12 x 11 | Borderless mode |
+| Poison Path | Eat 15 | 12 x 11 | Poison mode |
+| Gate Runner | Eat 15 | 12 x 11 | Gate mode |
+| Lights Out | Eat 15 | 12 x 11 | Light mode |
+| Dimension Drift | Eat 15 | 12 x 11 | Dimension mode |
+| Swiss Sprint | Eat 20 | 10 x 9 | Cheese mode |
+| Statue Garden | Eat 15 | 12 x 11 | Statue mode |
 
 Unless noted, categories run at the Default speed (130 ms per cell).
 
@@ -292,6 +303,72 @@ desktop players can play in the same match. In the lobby:
 that server that's still in its lobby and has room, busiest first. Type to
 search by match name, host or code; the list refreshes on its own. Press
 **Join** on a match (or **Enter** for the top one).
+
+**Bots.** **Play with bots** hosts a match with a computer player on the other
+team. In any lobby the host can click an empty slot to add a bot (Easy,
+Normal or Hard: the **Bot level** button), or the **x** next to a bot to
+remove it. Bots and people can play in the same match.
+
+**Inviting friends.** In a lobby, **Invite friends** lists your friends who
+are online. An invite pops up for them wherever they are in the game: they
+press **Join** (or **J**) to come straight to your match.
+
+The Online screen's other tabs (keys **1**-**5**) need an account:
+
+**Profile.** Your rank, wins and losses, world records held and snake points.
+Write a bio (up to 160 characters) and pick a profile picture (an icon and a
+colour). Click any player's name, in Friends or search results, to see their
+profile.
+
+**Friends.** Search players by username and send friend requests; they
+accept on their Friends tab. Your friends list shows who's online and who's
+in a match. **Play** hosts a match and invites that friend.
+
+**Snake points** are the currency for the store. You earn them on any site
+you're logged in to:
+
+| For | Snake points |
+| --- | --- |
+| Finishing a round (dying or winning), or a speedrun | 25 + 10 per fruit eaten (up to 2,000) |
+| A new personal record in a built-in speedrun category | 1,000 |
+| A new world record in a built-in speedrun category | 100,000 (plus the 1,000 for the PR) |
+| Keeping that world record | 10,000 for every full 3 days you hold it |
+| A versus match | 50, + 10 per fruit, + 200 for winning |
+
+Community categories (see below) keep their PRs and WRs but don't pay snake
+points. With mods on, rounds don't pay either.
+
+**Store.** The **Shop** sells Common, Uncommon and Rare skins outright.
+**Loot boxes** cost more as they get better (Bronze 2,000, Silver 7,500,
+Gold 25,000, Diamond 100,000) and each shows its odds. Opening one spins a
+reel of items that slows down onto your prize. Epic, Legendary and Mythic
+skins, and six texture packs (Midnight, Sakura, Desert Night, Synthwave,
+Arctic and Obsidian), only come from loot boxes. A duplicate turns back into
+snake points. There are 50 skins: plain colours, stripes, metals that
+shimmer, and animated ones that flow, pulse and glow. **Collection** is
+where you equip a skin (it's used whenever you play single-player, even
+offline) and turn won texture packs on.
+
+**Ranks.** Versus matches against other people earn rank points (RP): +30
+for a win, -20 for a loss, +5 for a draw. Matches with only bots for
+opponents don't change your rank.
+
+| Rank | RP |
+| --- | --- |
+| Hatchling | 0 |
+| Garter | 100 |
+| Rattler | 250 |
+| Cobra | 500 |
+| Viper | 800 |
+| Python | 1,200 |
+| Anaconda | 1,700 |
+| Basilisk | 2,300 |
+
+**Community.** Custom speedrun categories (see Custom categories above) that
+players have made, with who made them, how many people have played them and
+the WR. **Share my categories** adds yours. A category's creator is whoever
+shared it, or ran it, first. **Play** starts a run; **Save** adds it to your
+Speedrun screen.
 
 Crashing knocks only your snake out; you can keep watching. Two snakes moving
 into the same cell are both knocked out. You don't need an account to play
@@ -413,7 +490,9 @@ reopen the Packs & Mods screen.
 
 ### Built-in packs
 
-OpenSnake ships with three packs, all off by default:
+OpenSnake ships with three packs, all off by default (plus six colour-only
+packs that are prizes in the online store's loot boxes, and only show up
+here once you've won them):
 
 | Pack | Style |
 | --- | --- |
@@ -640,6 +719,9 @@ the view:
 | `opensnake/server.py` | The OpenSnake server: website, accounts, site records and versus matches. |
 | `opensnake/net.py` | Talking to a server from the desktop game or the browser. |
 | `opensnake/online.py` | The Online screen, lobby and versus match screens. |
+| `opensnake/hub.py` | The Online screen's Profile, Friends, Store and Community tabs. |
+| `opensnake/cosmetics.py` | Snake points, skins, loot boxes, ranks and profile pictures. |
+| `opensnake/bots.py` | Computer players for versus. |
 | `opensnake/records.json` | Speedrun world records. |
 | `opensnake/render.py` | All drawing: board, fruit, snake path, objects, mode icons, the scrolling view. |
 | `opensnake/audio.py` | Sound loading and synthesis. |

@@ -14,6 +14,7 @@ import pygame
 
 from . import gfx, modes
 from .assets import load_image
+from .cosmetics import skin_color, skin_outline
 from .game import DIRS
 from .registry import MODE_HOOKS
 
@@ -561,8 +562,11 @@ def build_snake_path(game, s, prev, t):
     return SnakePath(cells, exit_dir, game.w, game.h, wrap), s_head, s_tail
 
 
-def draw_snake(surf, s, path, s_head, s_tail, c, head_col, tail_col, cheese=False, outline=None, offset=(0, 0)):
-    """Draw the body as anti-aliased strips, one per cell, head on top."""
+def draw_snake(surf, s, path, s_head, s_tail, c, head_col, tail_col, cheese=False, outline=None, offset=(0, 0),
+               skin=None, now=0.0):
+    """Draw the body as anti-aliased strips, one per cell, head on top.
+
+    ``skin`` (from cosmetics) colours each cell by its pattern and may add an outline."""
     ox, oy = offset
     n_body = len(s.body)
     span = max(1.0, s_tail - s_head)
@@ -611,8 +615,14 @@ def draw_snake(surf, s, path, s_head, s_tail, c, head_col, tail_col, cheese=Fals
         cap(s_tail, half, color_of(path.cell_of(s_tail)))
 
     def color(i):
+        if skin:
+            return skin_color(skin, i, n_body, now)
         return mix(head_col, tail_col, min(1.0, i / span))
 
+    if skin:
+        head_col = color(0)
+        if outline is None:
+            outline = skin_outline(skin, now)
     half = 0.39
     if outline:
         paint(half + 1.5 / c, lambda i: outline)
@@ -717,7 +727,7 @@ class Renderer:
         return self._bg[1]
 
     def draw_board(self, game, t: float, now: float, palette, view: "View",
-                   hide_snake: bool = False) -> pygame.Surface:
+                   hide_snake: bool = False, skin=None) -> pygame.Surface:
         """Render the part of the board inside ``view`` to a viewport-sized surface."""
         c = self.c
         sp = self.sprites
@@ -807,7 +817,7 @@ class Renderer:
                            game.has("cheese"), (85, 85, 85), (v.ox, v.oy))
             else:
                 draw_snake(surf, s, path, s_head, s_tail, c, palette[0], palette[1], game.has("cheese"),
-                           offset=(v.ox, v.oy))
+                           offset=(v.ox, v.oy), skin=skin, now=now)
             if s.shield > 0:
                 gfx.filled_circle(surf, round(h[0]), round(h[1]), round(c * 0.62), (120, 190, 255, 70))
                 pygame.draw.circle(surf, (80, 160, 255), h, c * 0.62, max(2, int(c * 0.07)))

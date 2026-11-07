@@ -284,6 +284,11 @@ class BuiltinPackContentTests(unittest.TestCase):
         expected = {"snake_head", "fruit_apple", "fruit_poison", "wall", "statue", "mine", "key", "lock",
                     "shield", "trophy", "ring", "target", "arrow", "gate_open", "gate_closed", "pack"}
         for folder in sorted(BUILTIN_PACKS.iterdir()):
+            meta = json.loads((folder / "pack.json").read_text())
+            if meta.get("locked"):  # loot box packs only change colours
+                self.assertIn("board_light", AssetPack([folder]).colors, folder.name)
+                self.assertFalse(list(folder.glob("*.svg")), folder.name)
+                continue
             names = {f.stem for f in folder.glob("*.svg")}
             self.assertTrue(expected <= names, f"{folder.name} is missing {expected - names}")
             for svg in folder.glob("*.svg"):

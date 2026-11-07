@@ -19,9 +19,12 @@ class ServerTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.client = await self.make_client(Path(self.tmp.name) / "a")
+        self.server = self.client.opensnake
 
     async def make_client(self, data_dir):
-        client = TestClient(TestServer(Server(data_dir, None).app()))
+        server = Server(data_dir, None)
+        client = TestClient(TestServer(server.app()))
+        client.opensnake = server
         await client.start_server()
         return client
 

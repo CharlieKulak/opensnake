@@ -27,6 +27,7 @@ from .mods import LOADED as MOD_RESULTS
 from .mods import default_dirs as mod_dirs
 from .mods import describe_mod, iter_mods, load_mods
 from .online import Online
+from .cosmetics import SKIN_BY_ID
 from .render import FRUIT_COLORS, Renderer, View, head_position, mode_icon
 
 KEYMAP = {
@@ -45,7 +46,8 @@ DEFAULT_WINDOW = (1000, 840)
 # or fullscreen, and there is no Quit.
 WEB = sys.platform == "emscripten"
 WEB_RESOLUTIONS = [(1024, 576), (1280, 720), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160)]
-WEB_DEFAULT_DISPLAY = "1280x720"
+WEB_DEFAULT_DISPLAY = "1920x1080"
+DEFAULT_DISPLAY = "1920x1080"  # desktop, when it fits the monitor (otherwise a resizable window)
 
 
 def browser_window():
@@ -91,6 +93,8 @@ DEFAULTS = {
     "sr_goal": 10,           # its goal: fruit to eat (0 = fill the board)
     "player_name": "",       # put in saved speedrun files
     "online_records": True,  # fetch the latest world records from GitHub
+    "skin": "",              # equipped skin (from your account, kept for offline play)
+    "unlocked": [],          # items your accounts own, e.g. "pack:midnight" (unlocks loot box packs)
 }
 
 GOOD = (40, 160, 70)   # ahead of PB
@@ -257,9 +261,10 @@ class App:
                                  or all(a <= b for a, b in zip(map(int, v.split("x")), self.desktop))]
             dw, dh = self.desktop
             self.window_size = (min(DEFAULT_WINDOW[0], dw - 80), min(DEFAULT_WINDOW[1], dh - 100))
+            DEFAULTS["display"] = DEFAULT_DISPLAY if DEFAULT_DISPLAY in DISPLAY_VALUES else "window"
         self.clock = pygame.time.Clock()
         self.store = Store(config_path())
-        windowed = WEB_DEFAULT_DISPLAY if WEB else "window"
+        windowed = DEFAULTS["display"] if DEFAULTS["display"] != "fullscreen" else "window"
         self.windowed_display = windowed if self.store.settings["display"] == "fullscreen" \
             else self.store.settings["display"]
         self.icon_cache: dict = {}
@@ -268,7 +273,7 @@ class App:
         self.ad_col = 0                    # Packs & Mods screen: 0 = packs, 1 = mods
         self.ad_row = [0, 0]
         self.ad_hits: list[tuple] = []     # (rect, action) for mouse clicks on that screen
-        self.ad_packs = discover_packs()
+        self.ad_packs = self.available_packs()
         self.apply_packs()
         self.state = "menu"
         self.paused = False
@@ -413,6 +418,9 @@ class App:
             save_custom_categories(self.custom_path, self.custom_cats)
         self.sr_focus = next(i for i, c in enumerate(self.all_categories()) if c.id == cat.id)
 
+    def save_customs(self):
+        save_custom_categories(self.custom_path, self.custom_cats)
+
     def delete_custom_category(self, category_id: str):
         self.custom_cats = [c for c in self.custom_cats if c.id != category_id]
         save_custom_categories(self.custom_path, self.custom_cats)
@@ -493,11 +501,13 @@ class App:
             def report(text, color, res=result):
                 res["online"] = (text, color)
             self.online.submit_run(run.to_json(self.online.user, __version__), report)
+        self.online.report_round(run.game.score)
 
     def record_score(self):
         if self.recorded:
             return
         self.recorded = True
+        self.online.report_round(self.game.score)
         key = self.store.score_key()
         self.new_best = self.game.score > self.store.best.get(key, 0)
         if self.new_best:
@@ -554,6 +564,9 @@ class App:
                 self.speedrun_key(ev)
             elif self.state == "addons":
                 self.addons_key(ev)
+            elif ev.key == pygame.K_j and self.online.invite and not self.online.focus and \
+                    not getattr(self, "editing", None):
+                self.online.accept_invite()
             elif self.state in ("online", "lobby", "matches"):
                 self.online.key(ev)
             elif self.state == "versus":
@@ -574,8 +587,11 @@ class App:
                 self.focus = hit
         elif ev.type == pygame.MOUSEWHEEL and self.state == "speedrun":
             self.sr_scroll = max(0, self.sr_scroll - ev.y)
+            self.sr_wheeled = True  # scroll the list; the selection follows (not the other way round)
         elif ev.type == pygame.MOUSEWHEEL and self.state == "matches":
             self.online.scroll(-ev.y)
+        elif ev.type == pygame.MOUSEWHEEL and self.state == "online":
+            self.online.hub.wheel(ev.y)
         elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
             self.click(ev.pos)
         elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1 and self.dragging:
@@ -622,6 +638,8 @@ class App:
         return None
 
     def click(self, pos):
+        if self.online.popup_click(pos):
+            return
         if self.state in ("online", "lobby", "matches"):
             self.online.click(pos)
             return
@@ -960,7 +978,7 @@ class App:
         elif focused.get("id") == "blender":
             desc = "Mix 2-4 random modes together."
         elif focused.get("id") == "online":
-            desc = "Accounts, this site's leaderboards and versus matches (1v1 up to 4v4) with a code."
+            desc = "Versus and bot matches, your profile and friends, the store and loot boxes, community runs."
         elif focused.get("id") == "addons":
             desc = "Turn resource packs and mods on and off, like Minecraft resource packs."
         elif focused.get("id") == "speedrun":
@@ -1059,6 +1077,14 @@ class App:
 
     # ---- packs & mods ---------------------------------------------------------------
 
+    def available_packs(self):
+        """Every pack except loot box packs you haven't won yet."""
+        owned = set(self.settings.get("unlocked") or [])
+        return [pk for pk in discover_packs() if not pk.locked or f"pack:{pk.path.name}" in owned]
+
+    def refresh_packs(self):
+        self.ad_packs = self.available_packs()
+
     def pack_by_id(self):
         return {pk.id: pk for pk in self.ad_packs}
 
@@ -1080,7 +1106,7 @@ class App:
             self.online.fetch_records()
 
     def open_addons(self):
-        self.ad_packs = discover_packs()  # pick up packs dropped in since last time
+        self.refresh_packs()  # pick up packs dropped in (or won) since last time
         self.state = "addons"
 
     def pack_rows(self):
@@ -1388,22 +1414,24 @@ class App:
         top += head_f.get_height() + 8
         bottom = p.bottom - int(ph * 0.17)
         cats = self.all_categories()
-        row_h = min((bottom - top) // len(CATEGORIES), int(54 * grow))
+        row_h = max(44, int(ph * 0.085))  # big, readable rows; the list scrolls
         visible = max(1, (bottom - top) // row_h)
-        # keep the selected row on screen
         self.sr_focus = min(self.sr_focus, len(cats) - 1)
-        if self.sr_focus < self.sr_scroll:
+        self.sr_scroll = max(0, min(self.sr_scroll, len(cats) - visible))
+        if getattr(self, "sr_wheeled", False):  # the wheel moved the list: bring the selection along
+            self.sr_wheeled = False
+            self.sr_focus = max(self.sr_scroll, min(self.sr_focus, self.sr_scroll + visible - 1))
+        elif self.sr_focus < self.sr_scroll:  # keys moved the selection: keep it on screen
             self.sr_scroll = self.sr_focus
         elif self.sr_focus >= self.sr_scroll + visible:
             self.sr_scroll = self.sr_focus - visible + 1
-        self.sr_scroll = max(0, min(self.sr_scroll, len(cats) - visible))
         name_f = R.font(int(row_h * 0.46))
         text_f = R.font(int(row_h * 0.38), False)
         small_f = R.font(int(row_h * 0.3), False)
         self.sr_rows = []
         for row, i in enumerate(range(self.sr_scroll, min(len(cats), self.sr_scroll + visible))):
             cat = cats[i]
-            r = pygame.Rect(p.x + 14, top + row * row_h, pw - 28, row_h - 4)
+            r = pygame.Rect(p.x + 14, top + row * row_h, pw - 44, row_h - 6)
             self.sr_rows.append((i, r))
             focus = i == self.sr_focus
             base = (235, 243, 228) if cat.custom else (244, 246, 241)
@@ -1438,10 +1466,12 @@ class App:
             if wr_player:
                 img = small_f.render(wr_player, True, MUTED)
                 scr.blit(img, img.get_rect(midleft=(p.x + pw * 0.83, cy + row_h * 0.22)))
-        if len(cats) > visible:  # scroll position
-            more = small_f.render(f"{self.sr_scroll + 1}-{self.sr_scroll + len(self.sr_rows)} of {len(cats)}"
-                                  "   (scroll for more)", True, MUTED)
-            scr.blit(more, more.get_rect(topright=(p.right - 18, top + visible * row_h)))
+        if len(cats) > visible:  # a scrollbar along the right edge
+            track = pygame.Rect(p.right - 24, top, 8, visible * row_h - 6)
+            pygame.draw.rect(scr, (230, 233, 226), track, border_radius=4)
+            th = max(24, track.h * visible // len(cats))
+            ty = track.y + (track.h - th) * self.sr_scroll // max(1, len(cats) - visible)
+            pygame.draw.rect(scr, (150, 160, 140), (track.x, ty, track.w, th), border_radius=4)
 
         cat = cats[self.sr_focus]
         if self.sr_delete == cat.id:
@@ -1467,7 +1497,7 @@ class App:
         src = {"online": "updated online", "cached": "saved from online", "bundled": "built in"}.get(
             self.records.source, "none")
         hint = R.font(int(ph * 0.022), False).render(
-            "Up/Down: choose   Enter: start   Insert: add my settings   Delete: remove custom   Esc: back"
+            "Up/Down or wheel: choose   Enter: start   Insert: add my settings   Delete: remove custom   Esc: back"
             f"      World records: {src}" + (f" ({self.records.updated})" if self.records.updated else ""),
             True, MUTED)
         if hint.get_width() > pw - 20:
@@ -1711,7 +1741,8 @@ class App:
         blink = g.over and not g.won and since is not None and since < 900 and (since // 150) % 2 == 1
         cam_x, cam_y = self.camera(rect, t)
         view = View(R.c, cam_x, cam_y, rect.w, rect.h, g.w, g.h, now)
-        board = R.draw_board(g, t, now, palette, view, hide_snake=blink and self.state != "versus")
+        skin = SKIN_BY_ID.get(self.settings["skin"]) if self.state != "versus" else None
+        board = R.draw_board(g, t, now, palette, view, hide_snake=blink and self.state != "versus", skin=skin)
         if self.state == "versus":
             self.online.draw_labels(board, view)
         ox = oy = 0
@@ -1735,6 +1766,7 @@ class App:
             self.online.draw_lobby()
         elif self.state == "matches":
             self.online.draw_matches()
+        self.online.draw_popups()
 
     def frame(self):
         dt = self.clock.tick(60 if WEB else 120)
