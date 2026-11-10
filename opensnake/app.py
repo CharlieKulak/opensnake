@@ -1639,7 +1639,7 @@ class App:
     def update(self, dt):
         self.online.poll()
         if self.state == "versus":  # the server runs the match; just animate towards its next state
-            self.acc = min(self.acc + dt, self.tick_ms())
+            self.acc = min(self.acc + dt, self.tick_ms() * 1.5)  # (a late state carries the extra over)
             self.drain()
             return
         g = self.game

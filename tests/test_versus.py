@@ -103,6 +103,88 @@ class RulesTests(unittest.TestCase):
                         break
 
 
+class LagCompensationTests(unittest.TestCase):
+    """A turn that reaches the server a move or two late still happens where it was pressed, when that's fair."""
+
+    def path(self, g, i=0):
+        return [(p.x, p.y) for p in g.snakes[i].body]
+
+    def test_a_late_turn_is_applied_where_it_was_meant(self):
+        on_time, late = versus([0, 1]), versus([0, 1])
+        for g in (on_time, late):
+            g.step()
+            g.step()
+        on_time.input_for(0, "up")  # arrives in time for move 3
+        on_time.step()
+        late.step()                  # move 3 happens first (straight on)...
+        self.assertTrue(late.retro_turn(0, "up", 1))  # ...then the turn meant for it arrives
+        self.assertEqual(self.path(late), self.path(on_time))
+        self.assertEqual(late.snakes[0].dir, "up")
+
+    def test_two_moves_late(self):
+        on_time, late = versus([0, 1]), versus([0, 1])
+        on_time.step()
+        on_time.input_for(0, "down")
+        on_time.step()
+        on_time.step()
+        for _ in range(3):
+            late.step()
+        self.assertTrue(late.retro_turn(0, "down", 2))
+        self.assertEqual(self.path(late), self.path(on_time))
+
+    def test_only_when_fair(self):
+        g = versus([0, 1])
+        g.step()
+        self.assertFalse(g.retro_turn(0, "up", 2))     # only one move to undo
+        self.assertFalse(g.retro_turn(0, "left", 1))   # a reverse is never allowed
+        self.assertFalse(g.retro_turn(0, "right", 1))  # not a turn
+        g.input_for(0, "up")
+        g.step()
+        self.assertFalse(g.retro_turn(0, "left", 1))   # it turned meanwhile
+        g = versus([0, 1])
+        g.step()
+        x, y = g.snakes[0].head.x, g.snakes[0].head.y
+        g.apples.append(Apple(x, y - 1, "apple", 0))  # the new path (up from here) would eat a fruit
+        g.step()
+        self.assertFalse(g.retro_turn(0, "up", 1))
+        g = versus([0, 1])
+        g.step()
+        x, y = g.snakes[0].head.x, g.snakes[0].head.y
+        g.apples.append(Apple(x + 1, y, "apple", 0))  # the late move ate: no take-backs
+        g.step()
+        self.assertFalse(g.retro_turn(0, "up", 1))
+        g = versus([0, 1], h=6)
+        while g.snakes[0].head.y > 0:  # against the top wall: the new path would leave the board
+            g.input_for(0, "up")
+            g.step()
+        g.input_for(0, "right")
+        g.step()
+        g.step()
+        self.assertFalse(g.retro_turn(0, "up", 1))
+        self.assertFalse(g.over)
+
+    def test_the_server_uses_the_turn_step(self):
+        """End to end through the server's message handler, with a turn that arrives a move late."""
+        import asyncio
+        from opensnake.server import Player, Room, Server
+        import tempfile
+        from pathlib import Path
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        server = Server(Path(tmp.name), None)
+        self.addCleanup(server.db.close)
+        host = Player(None, 1, "a")
+        room = Room(server, "ABCD", host)
+        room.game = versus([0, 1])
+        room.state = "playing"
+        host.room, host.snake = room, 0
+        room.game.step()
+        room.game.step()  # the player saw tick 1 and meant the turn for move 2
+        asyncio.run(server.on_message(host, {"t": "input", "d": "up", "step": 2}))
+        self.assertEqual(room.game.snakes[0].dir, "up")
+        self.assertEqual(room.game.snakes[0].queue, [])  # applied, not queued for later
+
+
 class StateTests(unittest.TestCase):
     def test_state_round_trip(self):
         g = Game(16, 12, ("wall", "key"), 3, rng=random.Random(2), teams=[0, 0, 1])
@@ -167,7 +249,7 @@ class PredictionTests(unittest.TestCase):
         me = lambda: self.on.game.snakes[1]
         self.assertEqual(me().dir, "left")
         self.on.turn("up")
-        self.assertEqual(self.sent, [{"t": "input", "d": "up"}])  # still sent to the server
+        self.assertEqual(self.sent, [{"t": "input", "d": "up", "step": 1}])  # sent, with the move it's for
         self.assertEqual(me().planned, "up")                       # ...but shown right away
         self.on.on_message(self.server_step())                     # server applies it
         self.assertEqual(me().dir, "up")

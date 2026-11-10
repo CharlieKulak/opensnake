@@ -428,6 +428,13 @@ what you've earned, so spending them in the store doesn't lower your score.
 The top three get medals, your own row is highlighted, and if you're outside
 the top 100 your place is shown at the bottom.
 
+**Lag.** The server runs the match, so a turn has to reach it before the
+snake's next move. Your own snake turns on your screen straight away, and if
+your turn reaches the server a move or two late (ping over about 50 ms), the
+server still makes the turn happen where you pressed it, as long as the snake
+only went straight into empty cells meanwhile. Other players' snakes can
+sometimes shift a cell or two on your screen when that happens to their turns.
+
 Crashing knocks only your snake out; you can keep watching. Two snakes moving
 into the same cell are both knocked out. You don't need an account to play
 versus: guests play under the name typed in the Username box, or a random

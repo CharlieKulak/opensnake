@@ -59,7 +59,7 @@ from . import __version__
 from . import cosmetics as cos
 from .bots import BOT_NAMES, LEVEL_NAMES, LEVELS
 from .bots import choose as bot_choose
-from .game import DIRS, Game, game_to_state
+from .game import DIRS, MAX_LATE_MOVES, Game, game_to_state
 from .modes import BUILTIN_MODE_IDS, VERSUS_MODES, VERSUS_SIZES, speed_ms
 from .speedrun import CATEGORY_BY_ID, CUSTOM_PREFIX, category_from_def, verify
 
@@ -1177,8 +1177,14 @@ class Server:
             await p.ws.send_str(json.dumps({"t": "pong", "at": m.get("at")}))
             return
         if t == "input" and room and room.game and room.state == "playing":
-            if m.get("d") in DIRS and p.snake >= 0:
-                room.game.input_for(p.snake, m["d"])
+            g, d = room.game, m.get("d")
+            if d in DIRS and p.snake >= 0:
+                # "step": the move the player meant this turn for. If it arrived after
+                # that move (lag), apply it there anyway when that's fair.
+                step = m.get("step")
+                late = g.tick - step + 1 if isinstance(step, int) else 0
+                if not (1 <= late <= MAX_LATE_MOVES and g.retro_turn(p.snake, d, late)):
+                    g.input_for(p.snake, d)
             return
         if t == "host":
             await self.leave(p)

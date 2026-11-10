@@ -13,6 +13,9 @@ from .registry import MODE_HOOKS
 
 DIRS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 OPPOSITE = {"up": "down", "down": "up", "left": "right", "right": "left"}
+# Online versus: how many moves late a player's turn can arrive and still be
+# applied where they pressed it (see Game.retro_turn).
+MAX_LATE_MOVES = 2
 FRUITS = ["apple", "orange", "cherry", "grape", "strawberry", "lemon", "banana"]
 
 
@@ -46,6 +49,9 @@ class Snake:
     score: int = 0           # versus: fruit this snake has eaten
     name: str = ""           # versus: player name shown above the head
     colors: tuple | None = None  # (head, tail) colour override
+    # versus: the snake before each of its last few moves, (body, grow, hole_counter, dir),
+    # or None for a move that did anything but go straight into an empty cell
+    history: list = field(default_factory=list)
 
     @property
     def head(self) -> Seg:
@@ -459,8 +465,14 @@ class Game:
                 continue
             if not self.versus:
                 self._turn(s)
+            if self.versus:
+                before = ([Seg(p.x, p.y, p.hole) for p in s.body], s.grow, s.hole_counter, s.dir)
+                events = len(self.events)
             self._move_snake(s)
             s.moved = True
+            if self.versus:
+                plain = len(self.events) == events and s.dir == before[3] and not s.dead
+                s.history = (s.history + [before if plain else None])[-MAX_LATE_MOVES:]
             if self.over:
                 return
         if self.versus:
@@ -479,6 +491,47 @@ class Game:
             self.spawn_shield()
         for h in self.hooks:
             h.call("on_step", self)
+
+    def retro_turn(self, index: int, d: str, late: int) -> bool:
+        """Apply a turn that reached the server ``late`` moves after the one it was meant for.
+
+        Online, a turn pressed just before the snake reaches a cell can arrive after the
+        server has already moved it on. If the snake only went straight into empty cells
+        since then, those moves are redone going the new way, so the turn happens where
+        the player pressed it. Returns False (and changes nothing) if that isn't fair:
+        the snake turned, ate or picked something up meanwhile, or the new path isn't empty.
+        """
+        s = self.snakes[index]
+        if s.dead or self.over or not 1 <= late <= len(s.history) or s.queue or s.planned:
+            return False
+        recent = s.history[-late:]
+        if any(h is None or h[3] != recent[0][3] for h in recent):
+            return False
+        body, grow, holes, was = recent[0]
+        if d not in DIRS or d in (was, OPPOSITE[was]):
+            return False
+        cheese = self.has("cheese")
+        new = [Seg(p.x, p.y, p.hole) for p in body]
+        dx, dy = DIRS[d]
+        for _ in range(late):
+            x, y = new[0].x + dx, new[0].y + dy
+            if self.has("borderless"):
+                x, y = self._wrap(x, y)
+            elif not self.in_bounds(x, y):
+                return False
+            if (self.solid_at(x, y) or self.apple_at(x, y) or self.item_at(x, y) or (x, y) in self.arrows
+                    or (x, y) in self.mines or any(p.x == x and p.y == y for p in new)):
+                return False
+            new.insert(0, Seg(x, y, cheese and holes % 5 >= 3))
+            holes += 1
+            if grow > 0:
+                grow -= 1
+            else:
+                new.pop()
+        s.body, s.grow, s.hole_counter, s.dir = new, grow, holes, d
+        s.history = []  # (its path changed: no more rewinding past here)
+        self.revealed.update((p.x, p.y) for p in new[:late])
+        return True
 
     def _turn(self, s: Snake) -> None:
         if s.planned:

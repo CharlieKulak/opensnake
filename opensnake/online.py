@@ -463,7 +463,9 @@ class Online:
             apply_state(self.game, m["s"])
             self._colour(self.game)
             self._predict()
-            app.acc = 0.0
+            # Start animating towards the new state. If it came late, carry the extra
+            # time over (so the snakes catch up smoothly) instead of starting from zero.
+            app.acc = min(max(0.0, app.acc - self.tick_ms), self.tick_ms * 0.5)
             app.drain()
         elif t == "invite":
             self.invite = {**m, "until": pygame.time.get_ticks() + 30000}
@@ -704,7 +706,10 @@ class Online:
         last = self.pending[-1][0] if self.pending else me.dir
         if d in (last, OPPOSITE[last]) or d not in DIRS or len(self.pending) >= 2:
             return  # same as the server would ignore
-        self.send({"t": "input", "d": d})
+        # The move this turn is for: the one after the state on screen (or after the
+        # turns already waiting). The server uses it to make up for lag.
+        step = self.game.tick + 1 + len(self.pending)
+        self.send({"t": "input", "d": d, "step": step})
         self.pending.append((d, pygame.time.get_ticks()))
         self._predict()
         self.app.sfx.play("turn")
