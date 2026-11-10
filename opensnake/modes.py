@@ -27,7 +27,6 @@ MODES = [
     ("arrow", "Arrow", "Arrow tiles force you to turn the way they point."),
     ("magnet", "Magnet", "Fruit near your head gets pulled toward you."),
     ("gate", "Gate", "Gates open and close on a timer. Time your runs."),
-    ("peaceful", "Peaceful", "No game over. Crashing just stops you until you turn."),
 ]
 # The modes that ship with the game, fixed before any mod can add to MODES.
 BUILTIN_MODE_IDS = frozenset(m[0] for m in MODES) - {"classic"}
@@ -110,7 +109,7 @@ def toggle_mode(active, mode_id: str) -> set[str]:
 
 
 def blend_modes(rng=random) -> set[str]:
-    pool = [m[0] for m in MODES if m[0] not in ("classic", "peaceful")]
+    pool = [m[0] for m in MODES if m[0] != "classic"]
     n = rng.randint(2, 4)
     chosen: set[str] = set()
     for mode_id in rng.sample(pool, len(pool)):

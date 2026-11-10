@@ -69,6 +69,35 @@ def next_rank(rp: int) -> tuple[str, int] | None:
     return name, lo
 
 
+# ---- the community leaderboard ------------------------------------------------------
+#
+# Every player gets a score out of 100 from four parts. World records and PRs
+# count built-in speedrun categories only (anyone can make a new community
+# category and instantly hold its record). Snake points count what you've
+# earned, not your balance, so spending them doesn't lower your score.
+
+SCORE_PARTS = [  # (key, label, most points)
+    ("wrs", "World records", 30),
+    ("prs", "PRs", 25),
+    ("earned", "Snake points earned", 25),
+    ("skins", "Skins", 20),
+]
+FULL_WRS = 5                 # world records held for full marks
+FULL_EARNED = 1_000_000      # snake points earned for full marks (each point counts a bit less than the last)
+
+
+def player_score(wrs: int, prs: int, categories: int, earned: int, skins: int) -> dict:
+    """A player's score out of 100 and what each part gave: {"score": .., "parts": {key: points}}."""
+    fractions = {
+        "wrs": min(1.0, wrs / FULL_WRS),
+        "prs": min(1.0, prs / max(1, categories)),
+        "earned": min(1.0, (max(0, earned) / FULL_EARNED) ** (1 / 3)),
+        "skins": min(1.0, skins / len(SKINS)),
+    }
+    parts = {key: round(fractions[key] * most, 1) for key, _label, most in SCORE_PARTS}
+    return {"score": round(sum(parts.values()), 1), "parts": parts}
+
+
 # ---- rarities ----------------------------------------------------------------------
 
 RARITIES = ["common", "uncommon", "rare", "epic", "legendary", "mythic"]

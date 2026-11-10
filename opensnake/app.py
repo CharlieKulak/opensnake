@@ -118,6 +118,9 @@ OPTIONS = [
     ("display", "Display", DISPLAY_VALUES, display_label),
 ]
 
+# Screens drawn and controlled by the Online object.
+ACCOUNT_SCREENS = ("online", "community", "profile", "store", "lobby", "matches")
+
 WHITE = (255, 255, 255)
 PANEL = (255, 255, 255)
 INK = (40, 52, 33)
@@ -567,7 +570,7 @@ class App:
             elif ev.key == pygame.K_j and self.online.invite and not self.online.focus and \
                     not getattr(self, "editing", None):
                 self.online.accept_invite()
-            elif self.state in ("online", "lobby", "matches"):
+            elif self.state in ACCOUNT_SCREENS:
                 self.online.key(ev)
             elif self.state == "versus":
                 self.online.versus_key(ev)
@@ -590,7 +593,7 @@ class App:
             self.sr_wheeled = True  # scroll the list; the selection follows (not the other way round)
         elif ev.type == pygame.MOUSEWHEEL and self.state == "matches":
             self.online.scroll(-ev.y)
-        elif ev.type == pygame.MOUSEWHEEL and self.state == "online":
+        elif ev.type == pygame.MOUSEWHEEL and self.state in ("online", "community", "profile", "store"):
             self.online.hub.wheel(ev.y)
         elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
             self.click(ev.pos)
@@ -640,7 +643,7 @@ class App:
     def click(self, pos):
         if self.online.popup_click(pos):
             return
-        if self.state in ("online", "lobby", "matches"):
+        if self.state in ACCOUNT_SCREENS:
             self.online.click(pos)
             return
         if self.state == "addons":
@@ -841,6 +844,10 @@ class App:
             self.open_addons()
         elif w.get("id") == "online":
             self.open_online()
+        elif w.get("id") in ("store", "community"):
+            self.online.hub.open_tab(w["id"])
+        elif w.get("id") == "profile":
+            self.online.hub.open_tab("profile")
         elif w.get("id") == "quit":
             self.running = False
 
@@ -884,13 +891,19 @@ class App:
         bh = max(36, int(ph * 0.065))
         hint_h = int(ph * 0.024) + 16  # shortcut hint along the panel's bottom edge
         by = min(y + slider_h + 10, panel.bottom - hint_h - bh)
-        buttons = [("blender", "Blender"), ("speedrun", "Speedrun"), ("online", "Online"),
+        buttons = [("store", "Store"), ("speedrun", "Speedrun"), ("online", "Online"),
                    ("addons", "Packs & Mods"), ("play", "Play")] + \
             ([] if WEB else [("quit", "Quit")])
         bw = min(round(190 * grow), (pw - 40) // len(buttons) - 16)
         for i, (bid, _label) in enumerate(buttons):
             x = panel.centerx + (i - (len(buttons) - 1) / 2) * (bw + 16) - bw // 2
             widgets.append({"kind": "btn", "id": bid, "rect": pygame.Rect(x, by, bw, bh)})
+        # Round buttons in the top corners: community speedruns (left) and your profile (right).
+        d = max(44, int(ph * 0.085))
+        pad = int(ph * 0.025)
+        widgets.append({"kind": "icon", "id": "community", "rect": pygame.Rect(panel.x + pad, panel.y + pad, d, d)})
+        widgets.append({"kind": "icon", "id": "profile",
+                        "rect": pygame.Rect(panel.right - pad - d, panel.y + pad, d, d)})
         self.widgets = widgets
         self.focus = min(self.focus, len(widgets) - 1)
 
@@ -959,11 +972,14 @@ class App:
                 self.draw_check(w, r)
             elif w["kind"] == "slider":
                 self.draw_slider(r)
+            elif w["kind"] == "icon":
+                self.draw_corner_icon(w["id"], r, is_focus)
+                continue
             else:
                 primary = w["id"] == "play"
                 bg = ACCENT if primary else (242, 244, 239)
                 pygame.draw.rect(scr, bg, r, border_radius=r.h // 2)
-                text = {"blender": "Blender", "speedrun": "Speedrun", "addons": "Packs & Mods", "online": "Online",
+                text = {"store": "Store", "speedrun": "Speedrun", "addons": "Packs & Mods", "online": "Online",
                         "play": "Play", "quit": "Quit"}[w["id"]]
                 t = R.font(int(r.h * 0.55)).render(text, True, WHITE if primary else INK)
                 if t.get_width() > r.w - 16:  # long label on a narrow button
@@ -975,10 +991,14 @@ class App:
 
         if focused["kind"] == "mode":
             desc = MODE_DESCS[focused["id"]]
-        elif focused.get("id") == "blender":
-            desc = "Mix 2-4 random modes together."
+        elif focused.get("id") == "store":
+            desc = "Skins, texture packs and loot boxes, for snake points."
+        elif focused.get("id") == "community":
+            desc = "Custom speedrun categories players have made and shared, with their records."
+        elif focused.get("id") == "profile":
+            desc = "Your profile, friends and messages."
         elif focused.get("id") == "online":
-            desc = "Versus and bot matches, your profile and friends, the store and loot boxes, community runs."
+            desc = "Log in, and play versus and bot matches."
         elif focused.get("id") == "addons":
             desc = "Turn resource packs and mods on and off, like Minecraft resource packs."
         elif focused.get("id") == "speedrun":
@@ -1009,6 +1029,43 @@ class App:
         hint = R.font(int(ph * 0.024), False).render(
             "Arrows: move   Enter: select   B: blender   T: speedrun   O: online   M: packs & mods   F11: fullscreen" + mods_txt, True, MUTED)
         scr.blit(hint, hint.get_rect(midbottom=(p.centerx, p.bottom - 10)))
+
+    def draw_corner_icon(self, which, r, focused):
+        """The menu's round Community and Profile buttons."""
+        scr, R = self.screen, self.renderer
+        hub = self.online.hub
+        c, rad = r.center, r.w / 2
+        if focused:
+            pygame.draw.circle(scr, (255, 170, 0), c, rad + 5, 3)
+        if which == "community":
+            pygame.draw.circle(scr, (226, 238, 255), c, rad)
+            pygame.draw.circle(scr, ACCENT, c, rad, max(2, int(rad * 0.08)))
+            # a podium: community categories and their records
+            u = rad * 0.3
+            base = c[1] + rad * 0.5
+            for dx, h, col in ((-1.15, 1.1, (192, 200, 210)), (0, 1.7, (255, 196, 0)), (1.15, 0.8, (205, 127, 50))):
+                pygame.draw.rect(scr, col, (c[0] + dx * u - u * 0.55, base - h * u, u * 1.1, h * u), border_radius=2)
+            pygame.draw.circle(scr, (255, 196, 0), (c[0], base - 1.7 * u - u * 0.55), u * 0.4)
+            label = "Community"
+        else:
+            me = self.online.me if self.online.logged_in else None
+            if me:
+                hub.avatar(c, rad, me.get("avatar"), me.get("name", self.online.user))
+            else:  # a person outline
+                pygame.draw.circle(scr, (220, 224, 216), c, rad)
+                pygame.draw.circle(scr, (150, 158, 146), (c[0], c[1] - rad * 0.22), rad * 0.3)
+                body = pygame.Rect(0, 0, rad * 1.1, rad * 0.7)
+                body.midtop = (c[0], c[1] + rad * 0.15)
+                pygame.draw.ellipse(scr, (150, 158, 146), body)
+            pygame.draw.circle(scr, (200, 206, 194), c, rad, max(2, int(rad * 0.06)))
+            if hub.unread:
+                b = (r.right - rad * 0.25, r.y + rad * 0.25)
+                pygame.draw.circle(scr, BAD, b, rad * 0.32)
+                t = R.font(int(rad * 0.4)).render(str(min(99, hub.unread)), True, WHITE)
+                scr.blit(t, t.get_rect(center=b))
+            label = self.online.user if me else "Profile"
+        t = R.font(max(16, int(rad * 0.56))).render(label, True, MUTED)
+        scr.blit(t, t.get_rect(midtop=(c[0], r.bottom + 4)))
 
     def draw_check(self, w, r):
         scr, R = self.screen, self.renderer
@@ -1102,6 +1159,7 @@ class App:
     def open_online(self):
         self.state = "online"
         self.online.focus = None
+        self.online.tab = "play"
         if self.online.server_state in ("ok", "no-server", "error") and self.online.server:
             self.online.fetch_records()
 
@@ -1760,7 +1818,7 @@ class App:
             self.draw_speedrun()
         elif self.state == "addons":
             self.draw_addons()
-        elif self.state == "online":
+        elif self.state in ("online", "community", "profile", "store"):
             self.online.draw_online()
         elif self.state == "lobby":
             self.online.draw_lobby()

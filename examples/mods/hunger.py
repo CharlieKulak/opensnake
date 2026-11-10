@@ -29,7 +29,7 @@ def setup(api):
         for s in game.snakes:
             if len(s.body) > 2:
                 s.body.pop()
-            elif not game.has("peaceful"):
+            else:
                 s.dead = True
                 game.over = True
                 game.events.append(api.game.Event("die", fruit="hunger"))

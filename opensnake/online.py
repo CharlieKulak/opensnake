@@ -83,7 +83,7 @@ class Online:
             "dm": Field("Write a message", max_len=500),
             "picture_path": Field("Path to an image, e.g. /home/me/Pictures/me.png", max_len=400),
         }
-        self.tab = "play"            # Online screen tab: play / profile / friends / store / community
+        self.tab = "play"            # the account screen's tab (see hub.SCREENS)
         self.me: dict | None = None  # your profile, points and items on this server
         self.toasts: list[list] = []  # [text, colour, until (ms)]
         self.invite: dict | None = None  # a friend's invite waiting for an answer
@@ -597,11 +597,11 @@ class Online:
             if self.focus == "match_name" and f.value != before:
                 self.set_details(name=f.value)
             return
-        if state == "online" and self.tab != "play" and self.hub.key(ev):
+        if state in ("online", "community", "profile", "store") and self.tab != "play" and self.hub.key(ev):
             return
-        from .hub import TABS
-        if state == "online" and pygame.K_1 <= ev.key < pygame.K_1 + len(TABS):
-            self.hub.open_tab(TABS[ev.key - pygame.K_1][0])
+        tabs = self.hub.tabs()
+        if len(tabs) > 1 and pygame.K_1 <= ev.key < pygame.K_1 + len(tabs):
+            self.hub.open_tab(tabs[ev.key - pygame.K_1][0])
             return
         if ev.key == pygame.K_ESCAPE:
             if state == "lobby":
@@ -781,10 +781,12 @@ class Online:
     # ---- Online screen ----------------------------------------------------------------------------
 
     def draw_online(self) -> None:
+        """The Online, Profile and Store screens (whichever app.state is)."""
+        from .hub import TITLES
         p, grow = self._panel()
         ph = p.h
         focus = self.focus  # clicks reset focus; keep it while drawing
-        self._text("Online", ph * 0.06, (74, 117, 44), midtop=(p.centerx, p.y + ph * 0.02))
+        self._text(TITLES.get(self.app.state, "Online"), ph * 0.06, (74, 117, 44), midtop=(p.centerx, p.y + ph * 0.02))
         top = self.hub.draw_tabs(p, p.y + int(ph * 0.09)) + int(ph * 0.03)
         bottom = p.bottom - int(ph * 0.16)
         if self.tab == "play":
@@ -798,10 +800,11 @@ class Online:
         self._button(pygame.Rect(p.centerx - int(70 * grow), p.bottom - int(ph * 0.05) - bh, int(140 * grow), bh),
                      "Back", self.app.open_menu)
         hint = {"play": "Tab: next box   Enter: confirm   H: host   B: public matches   Esc: back",
-                "store": "Wheel / Up / Down: scroll   1-6: tabs   Esc: back",
-                "friends": "Click a player to see their profile   1-6: tabs   Esc: back",
-                "messages": "Enter: send   Wheel: older messages   1-6: tabs   Esc: close chat",
-                "community": "Type to search   Wheel: scroll   1-6: tabs   Esc: back"}.get(self.tab, "1-6: tabs   Esc: back")
+                "store": "Wheel / Up / Down: scroll   Esc: back",
+                "friends": "Click a player to see their profile   1-3: tabs   Esc: back",
+                "messages": "Enter: send   Wheel: older messages   1-3: tabs   Esc: close chat",
+                "community": "Type to search   Wheel: scroll   1-2: tabs   Esc: back",
+                "ranking": "Wheel: scroll   1-2: tabs   Esc: back"}.get(self.tab, "1-3: tabs   Esc: back")
         self._text(hint, ph * 0.022, MUTED, midbottom=(p.centerx, p.bottom - 8))
         self.focus = focus
 

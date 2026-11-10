@@ -360,3 +360,32 @@ class ClientRobustnessTests(ServerTestCase):
         from opensnake.net import decode_png, load_picture
         img = decode_png(base64.b64decode(load_picture("packaging/linux/opensnake-256.png")))
         self.assertEqual(img.get_size(), (128, 128))
+
+
+class RankingTests(ServerTestCase):
+    async def test_scores_out_of_100_and_ranked(self):
+        self.assertEqual(cos.player_score(cos.FULL_WRS, 21, 21, cos.FULL_EARNED, len(cos.SKINS))["score"], 100.0)
+        self.assertEqual(cos.player_score(0, 0, 21, 0, 0)["score"], 0.0)
+        a, b = await self.account("alice"), await self.account("bobby")
+        await self.account("carol")  # no score: not listed
+        db = self.server.db
+        await self.post("/api/runs", bot_run(CATEGORY_BY_ID["sprint10"], 4, random.Random(3)).to_json(), a)  # PR + WR
+        db.add_points(2, 50_000, "test")
+        db.buy(2, "skin:mint")  # spending doesn't lower the score
+        db.grant(2, "skin:galaxy")
+        cat = make_custom(10, 9, ["wall"], 3, 1, 130)  # community records don't count
+        await self.post("/api/runs", bot_run(cat, 4, random.Random(3)).to_json(), b)
+        status, data = await self.get("/api/rankings", b)
+        self.assertEqual(status, 200)
+        by = {p["name"]: p for p in data["players"]}
+        self.assertEqual(set(by), {"alice", "bobby"})
+        alice, bobby = by["alice"], by["bobby"]
+        self.assertEqual((alice["wrs"], alice["prs"], alice["earned"]),
+                         (1, 1, cos.PR_REWARD + cos.WR_REWARD))
+        self.assertEqual((bobby["wrs"], bobby["prs"], bobby["earned"], bobby["skins"]), (0, 0, 50_000, 2))
+        self.assertEqual([p["name"] for p in data["players"]],
+                         sorted(by, key=lambda n: -by[n]["score"]))
+        self.assertEqual([p["place"] for p in data["players"]], [1, 2])
+        self.assertEqual(data["me"]["name"], "bobby")
+        self.assertAlmostEqual(alice["score"], sum(alice["parts"].values()), places=1)
+        self.assertEqual(sum(pt["most"] for pt in data["parts"]), 100)

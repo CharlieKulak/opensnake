@@ -26,6 +26,7 @@ HTTP API (JSON):
     GET  /api/categories?q=                      -> community custom speedrun categories
     POST /api/categories      {def}              -> share a custom category
     POST /api/categories/rename  {id, name}      -> rename a category you made
+    GET  /api/rankings                           -> the community leaderboard: scores out of 100
     GET  /api/messages                           -> {chats: [{name, last, unread}], unread}
     GET  /api/messages/{name}?before=id          -> {messages: [...]} with a friend (marks them read)
     POST /api/messages        {to, body}         -> send a friend a message (also pushed live as "dm")
@@ -444,6 +445,36 @@ class Database:
         rp = self.user_by_id(user_id)["rp"]
         return {"points": points, "balance": balance, "rp": rp, "rp_change": delta, "rank": cos.rank_for(rp)[1]}
 
+    # -- the community leaderboard
+
+    def rankings(self) -> list[dict]:
+        """Every player with a score above 0, ranked by their score out of 100 (see cosmetics.player_score)."""
+        builtin = list(CATEGORY_BY_ID)
+        marks = ",".join("?" * len(builtin))
+        wrs: dict[str, int] = {}
+        for cat, rec in self.records().items():
+            if cat in CATEGORY_BY_ID:
+                wrs[rec["player"].lower()] = wrs.get(rec["player"].lower(), 0) + 1
+        prs = dict(self.db.execute(f"SELECT user_id, COUNT(DISTINCT category) FROM runs WHERE category IN ({marks}) "
+                                   "GROUP BY user_id", builtin).fetchall())
+        earned = dict(self.db.execute("SELECT user_id, SUM(amount) FROM ledger WHERE amount > 0 "
+                                      "AND reason NOT LIKE 'duplicate%' GROUP BY user_id").fetchall())
+        skins = dict(self.db.execute("SELECT user_id, COUNT(*) FROM inventory WHERE item LIKE 'skin:%' "
+                                     "GROUP BY user_id").fetchall())
+        out = []
+        for row in self.db.execute("SELECT id, name, avatar, rp FROM users").fetchall():
+            stats = {"wrs": wrs.get(row["name"].lower(), 0), "prs": prs.get(row["id"], 0),
+                     "earned": earned.get(row["id"], 0) or 0, "skins": skins.get(row["id"], 0)}
+            result = cos.player_score(stats["wrs"], stats["prs"], len(builtin), stats["earned"], stats["skins"])
+            if result["score"] <= 0:
+                continue
+            out.append({"name": row["name"], "avatar": row["avatar"] or cos.DEFAULT_AVATAR,
+                        "rank": cos.rank_for(row["rp"])[1], **stats, **result})
+        out.sort(key=lambda p: (-p["score"], p["name"].lower()))
+        for place, p in enumerate(out, 1):
+            p["place"] = place
+        return out
+
     # -- community categories
 
     def share_category(self, definition: dict, user_id: int) -> str:
@@ -768,6 +799,7 @@ class Server:
         r.add_get("/api/categories", self.categories)
         r.add_post("/api/categories", self.share_category)
         r.add_post("/api/categories/rename", self.rename_category)
+        r.add_get("/api/rankings", self.rankings)
         r.add_get("/api/messages", self.chats)
         r.add_get("/api/messages/{name}", self.conversation)
         r.add_post("/api/messages", self.send_message)
@@ -964,6 +996,16 @@ class Server:
     # -- community categories
     async def categories(self, request: web.Request) -> web.Response:
         return web.json_response({"categories": self.db.community(request.query.get("q", "").strip()[:40])})
+
+    # -- the community leaderboard
+    async def rankings(self, request: web.Request) -> web.Response:
+        """The top 100, plus your own place if you're logged in and further down."""
+        ranked = self.db.rankings()
+        me = self.db.user_for(self.token(request))
+        mine = next((p for p in ranked if me and p["name"].lower() == me["name"].lower()), None)
+        return web.json_response({"players": ranked[:100], "me": mine, "total": len(ranked),
+                                  "parts": [{"key": k, "label": label, "most": most}
+                                            for k, label, most in cos.SCORE_PARTS]})
 
     # -- messages
     async def chats(self, request: web.Request) -> web.Response:

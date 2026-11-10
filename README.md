@@ -113,7 +113,14 @@ The mouse works everywhere in the menu: click tiles and buttons, click the
 **Mode tiles.** Click a mode to turn it on or off. Any number can be on at
 once. **Classic** turns them all off. A few pairs that make no sense together
 switch each other off (Sokoban + Portal, Sokoban + Poison, Portal + Poison).
-**Blender** picks a random mix of 2 to 4 modes.
+Press **B** for a "Blender": a random mix of 2 to 4 modes.
+
+**Community, Profile and Store.** The round button in the top-left corner
+opens **Community** (custom speedrun categories players have shared). The
+one in the top-right corner (your profile picture, with a red badge for
+unread messages) opens your **Profile**, with your friends and messages. The
+**Store** button opens the store. See Online play: Profile and Store need an
+account on an OpenSnake website.
 
 **Fruit.** Apple, orange, cherry, grape, strawberry, lemon, banana, or
 **Mixed** (a random fruit each time). Mods can add more.
@@ -313,7 +320,10 @@ remove it. Bots and people can play in the same match.
 are online. An invite pops up for them wherever they are in the game: they
 press **Join** (or **J**) to come straight to your match.
 
-The Online screen's other tabs (keys **1**-**6**) need an account:
+The **Online** screen is for logging in and versus matches. **Community**
+is the round button in the menu's top-left corner. Your **Profile** (the
+top-right one, with tabs for Profile, Friends and Messages: keys **1**-**3**)
+and the **Store** (the **Store** button) need an account:
 
 **Profile.** Your rank, wins and losses, world records held and snake points.
 Write a bio (up to 160 characters) and set a profile picture: **Upload
@@ -384,6 +394,22 @@ records stay, and everyone who saved it gets the new name the next time they
 open the Community tab. **Play** starts a run; **Save** adds it to your
 Speedrun screen.
 
+**Community leaderboard.** Community's **Leaderboard** tab ranks every
+player on the site by a score out of 100, made of four parts:
+
+| Part | Up to | Full marks at |
+| --- | --- | --- |
+| World records held | 30 | 5 |
+| PRs (built-in speedrun categories you've finished) | 25 | all of them |
+| Snake points earned | 25 | 1,000,000 (the first points count the most) |
+| Skins owned | 20 | all 70 |
+
+Only built-in speedrun categories count, since anyone can make a new
+community category and hold its record straight away. Snake points count
+what you've earned, so spending them in the store doesn't lower your score.
+The top three get medals, your own row is highlighted, and if you're outside
+the top 100 your place is shown at the bottom.
+
 Crashing knocks only your snake out; you can keep watching. Two snakes moving
 into the same cell are both knocked out. You don't need an account to play
 versus: guests play under the name typed in the Username box, or a random
@@ -428,7 +454,6 @@ replaced with an [asset pack](#asset-packs). The menu shows the best for the cur
 | Arrow | Arrow tiles force you to turn the way they point. |
 | Magnet | Fruit near your head gets pulled toward you. |
 | Gate | Gates open and close on a timer. |
-| Peaceful | No game over. Crashing just stops you until you turn. |
 
 ## How movement works
 
@@ -553,7 +578,7 @@ so square images work best.
 
 **Sounds** (`.ogg`, `.wav`, `.mp3` or `.flac`): `eat`, `turn`, `start`, `die`,
 `portal`, `push`, `unlock`, `shieldup`, `shield`, `poison`, `dimension`,
-`arrow`, `bump`, `poof`, `win`, plus any sound a mod registers.
+`arrow`, `poof`, `win`, plus any sound a mod registers.
 
 **Colours** go in an optional `pack.json`:
 
@@ -733,7 +758,7 @@ the view:
 | `opensnake/server.py` | The OpenSnake server: website, accounts, site records and versus matches. |
 | `opensnake/net.py` | Talking to a server from the desktop game or the browser. |
 | `opensnake/online.py` | The Online screen, lobby and versus match screens. |
-| `opensnake/hub.py` | The Online screen's Profile, Friends, Store and Community tabs. |
+| `opensnake/hub.py` | The Profile (with Friends and Messages), Store and Community screens. |
 | `opensnake/cosmetics.py` | Snake points, skins, loot boxes, ranks and profile pictures. |
 | `opensnake/bots.py` | Computer players for versus. |
 | `opensnake/records.json` | Speedrun world records. |

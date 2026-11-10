@@ -22,8 +22,16 @@ from .speedrun import category_from_def, describe, format_time
 CARD = (244, 246, 241)
 POINTS = (214, 150, 0)
 
-TABS = [("play", "Play"), ("profile", "Profile"), ("friends", "Friends"), ("messages", "Messages"),
-        ("store", "Store"), ("community", "Community")]
+# The account screens and their tabs. Online and Store are reached from the
+# menu's buttons; Community and Profile from the circles in its top corners.
+SCREENS = {
+    "online": [("play", "Play")],
+    "community": [("community", "Categories"), ("ranking", "Leaderboard")],
+    "profile": [("profile", "Profile"), ("friends", "Friends"), ("messages", "Messages")],
+    "store": [("store", "Store")],
+}
+SCREEN_OF = {tab: screen for screen, tabs in SCREENS.items() for tab, _label in tabs}
+TITLES = {"online": "Online", "community": "Community", "profile": "Profile", "store": "Store"}
 STORE_TABS = [("shop", "Shop"), ("crates", "Loot boxes"), ("collection", "Collection")]
 
 REEL_CARDS = 48       # cards on a loot box reel
@@ -54,6 +62,7 @@ class Hub:
         self.pictures: dict = {}           # player name -> [version, image or None while loading]
         self.picker: ImagePicker | None = None
         self.renaming: str | None = None   # id of the community category being renamed
+        self.ranking: dict | None = None    # the community leaderboard, once loaded
         # messages
         self.chats: list[dict] = []        # conversations, newest first
         self.unread = 0
@@ -77,6 +86,7 @@ class Hub:
                 "community": ["community"] + (["rename"] if self.renaming else [])}.get(tab, [])
 
     def open_tab(self, tab: str) -> None:
+        self.app.state = SCREEN_OF[tab]
         self.on.tab = tab
         self.on.focus = None
         self.scroll = 0
@@ -91,6 +101,8 @@ class Hub:
             self.on.refresh_me()
         elif tab == "community":
             self.load_community()
+        elif tab == "ranking":
+            self.load_ranking()
         elif tab == "messages":
             self.load_friends()
             self.load_chats()
@@ -118,6 +130,14 @@ class Hub:
             if r.ok and q == self.users_query:
                 self.users = r.data.get("users", [])
         self.on.request("GET", "/api/users?" + urllib.parse.urlencode({"q": query}), then=done, auth=False)
+
+    def load_ranking(self) -> None:
+        def done(r):
+            if r.ok:
+                self.ranking = r.data
+            else:
+                self.on.say(r.message, BAD)
+        self.on.request("GET", "/api/rankings", then=done)
 
     def load_community(self) -> None:
         query = self.on.fields["community"].value.strip()
@@ -199,7 +219,7 @@ class Hub:
         """A message arrived (pushed by the server)."""
         me = self.on.user.lower()
         other = m["to"] if m["from"].lower() == me else m["from"]
-        viewing = self.on.app.state == "online" and self.on.tab == "messages" and \
+        viewing = self.on.app.state == "profile" and self.on.tab == "messages" and \
             (self.chat_with or "").lower() == other.lower()
         if viewing:
             self.add_message(m)
@@ -272,7 +292,7 @@ class Hub:
         def done(r):
             if r.ok:
                 self.viewing = r.data
-                self.on.tab = "profile"
+                self.app.state, self.on.tab = "profile", "profile"
             else:
                 self.on.say(r.message, BAD)
         self.on.request("GET", f"/api/users/{urllib.parse.quote(name)}", then=done)
@@ -569,15 +589,22 @@ class Hub:
 
     # ---- tabs ---------------------------------------------------------------------------------
 
+    def tabs(self) -> list:
+        return SCREENS.get(self.app.state, [])
+
     def draw_tabs(self, p, y) -> int:
-        """The tab bar under the title; returns its bottom."""
+        """The current screen's tab bar under the title (if it has more than one tab); returns its bottom."""
+        tabs = self.tabs()
+        if len(tabs) < 2:
+            return y
         ph = p.h
-        n = len(TABS)
+        n = len(tabs)
         gap = 8
-        tw = (p.w - 80 - gap * (n - 1)) // n
+        tw = min((p.w - 80 - gap * (n - 1)) // n, int(p.w * 0.26))
+        x0 = p.centerx - (n * tw + (n - 1) * gap) // 2
         th = max(30, int(ph * 0.048))
-        for i, (tab, label) in enumerate(TABS):
-            r = pygame.Rect(p.x + 40 + i * (tw + gap), y, tw, th)
+        for i, (tab, label) in enumerate(tabs):
+            r = pygame.Rect(x0 + i * (tw + gap), y, tw, th)
             on = self.on.tab == tab
             pygame.draw.rect(self.app.screen, ACCENT if on else (236, 239, 232), r, border_radius=r.h // 2)
             self.text(label, th * 0.48, WHITE if on else INK, center=r.center)
@@ -590,9 +617,13 @@ class Hub:
 
     def draw(self, p, top: int, bottom: int) -> None:
         tab = self.on.tab
-        if tab != "community" and not self.on.logged_in:
-            self.text("Log in on the Play tab to use your " + tab + ".", p.h * 0.03, MUTED,
-                      center=(p.centerx, (top + bottom) // 2))
+        if tab not in ("community", "ranking") and not self.on.logged_in:
+            what = {"store": "the store", "friends": "friends", "messages": "messages"}.get(tab, "your profile")
+            mid = (top + bottom) // 2
+            self.text(f"Log in to use {what}.", p.h * 0.034, INK, midbottom=(p.centerx, mid - 10))
+            b = pygame.Rect(0, 0, int(p.w * 0.3), max(36, int(p.h * 0.058)))
+            b.midtop = (p.centerx, mid + 10)
+            self.button(b, "Log in on the Online screen", self.app.open_online, True)
             return
         if tab == "profile":
             self.draw_profile(p, top, bottom)
@@ -604,6 +635,82 @@ class Hub:
             self.draw_community(p, top, bottom)
         elif tab == "messages":
             self.draw_messages(p, top, bottom)
+        elif tab == "ranking":
+            self.draw_ranking(p, top, bottom)
+
+    # ---- Community leaderboard -------------------------------------------------------------
+
+    def draw_ranking(self, p, top, bottom) -> None:
+        ph = p.h
+        x, w = p.x + 40, p.w - 80
+        scr = self.app.screen
+        data = self.ranking
+        if data is None:
+            self.text("Loading...", ph * 0.03, MUTED, center=(p.centerx, (top + bottom) // 2))
+            return
+        parts = data.get("parts", [])
+        self.text("Score out of 100:  " + "  ·  ".join(f"{pt['label']} {pt['most']}" for pt in parts) +
+                  "  (built-in speedruns only)", ph * 0.022, MUTED, topleft=(x, top))
+        y = top + ph * 0.04
+        players = data.get("players", [])
+        if not players:
+            self.text("Nobody has a score yet. Play speedruns, set records and collect skins!", ph * 0.028, MUTED,
+                      center=(p.centerx, (top + bottom) // 2))
+            return
+        # columns: place, player, score bar, then each part's raw number
+        cols = [("#", 0.0), ("Player", 0.06), ("Score", 0.36), ("WRs", 0.62), ("PRs", 0.71),
+                ("Points earned", 0.79), ("Skins", 0.93)]
+        for label, fx in cols:
+            self.text(label, ph * 0.024, MUTED, topleft=(x + w * fx, y))
+        y += ph * 0.038
+        row = max(38, int(ph * 0.06))
+        me_name = self.on.user.lower() if self.on.logged_in else ""
+        mine = data.get("me")
+        room = max(1, int((bottom - y - ph * 0.04) // (row + 4)))
+        self.scroll = min(self.scroll, max(0, len(players) - room))
+        rows = players[self.scroll:self.scroll + room]
+        if mine and not any(r["name"].lower() == me_name for r in rows):
+            rows = rows[:max(0, room - 1)] + [None, mine]  # you're further down: show your row at the end
+        medals = {1: (255, 196, 0), 2: (180, 188, 198), 3: (205, 127, 50)}
+        colors = {"wrs": (255, 176, 0), "prs": (61, 111, 232), "earned": (40, 160, 70), "skins": (163, 64, 214)}
+        for entry in rows:
+            if entry is None:
+                self.text("...", row * 0.4, MUTED, midleft=(x + 8, y + row * 0.25))
+                y += row * 0.5
+                continue
+            r = pygame.Rect(x, y, w, row)
+            you = entry["name"].lower() == me_name
+            pygame.draw.rect(scr, (226, 238, 255) if you else CARD, r, border_radius=8)
+            place = entry["place"]
+            if place in medals:
+                pygame.draw.circle(scr, medals[place], (x + w * 0.02, r.centery), row * 0.3)
+            self.text(str(place), row * 0.38, WHITE if place in medals else INK, center=(x + w * 0.02, r.centery))
+            rad = row * 0.34
+            self.avatar((x + w * 0.06 + rad, r.centery), rad, entry.get("avatar"), entry["name"])
+            self.text(entry["name"] + ("  (you)" if you else ""), row * 0.38, INK,
+                      midleft=(x + w * 0.06 + 2 * rad + 10, r.centery))
+            # the score: a bar split into its parts, and the number
+            bar = pygame.Rect(x + w * 0.36, r.centery - row * 0.14, w * 0.17, row * 0.28)
+            pygame.draw.rect(scr, (228, 231, 224), bar, border_radius=bar.h // 2)
+            bx = bar.x
+            for pt in parts:
+                seg = bar.w * entry["parts"].get(pt["key"], 0) / 100
+                if seg >= 1:
+                    pygame.draw.rect(scr, colors.get(pt["key"], ACCENT), (bx, bar.y, seg, bar.h))
+                    bx += seg
+            self.text(f"{entry['score']:.1f}", row * 0.42, INK, midleft=(bar.right + 10, r.centery))
+            for key, fx in (("wrs", 0.62), ("prs", 0.71), ("earned", 0.79), ("skins", 0.93)):
+                value = cos.format_points(entry[key]) if key == "earned" else str(entry[key])
+                self.text(value, row * 0.36, INK, midleft=(x + w * fx, r.centery))
+            y += row + 4
+        legend_y = bottom - ph * 0.005
+        lx = x
+        for pt in parts:
+            pygame.draw.circle(scr, colors.get(pt["key"], ACCENT), (lx + 6, legend_y - 6), 6)
+            t = self.text(pt["label"], ph * 0.022, MUTED, bottomleft=(lx + 16, legend_y))
+            lx = t.right + 22
+        if data.get("total", 0) > len(players):
+            self.text(f"Top {len(players)} of {data['total']}", ph * 0.022, MUTED, bottomright=(x + w, legend_y))
 
     # ---- Messages --------------------------------------------------------------------------------
 

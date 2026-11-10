@@ -992,11 +992,6 @@ def mode_icon(sprites: Sprites, mode_id: str, size: int) -> pygame.Surface:
         put("fruit", 1, 0, "apple")
     elif m == "gate":
         put("gate_closed", 1, 0); put("gate_open", 1, 2); snake([(0, 1), (1, 1), (2, 1)])
-    elif m == "peaceful":
-        snake([(0, 2), (1, 2), (1, 1)])
-        heart = [(2.5 * c + 16 * math.sin(t) ** 3 * c / 50, 0.5 * c - (13 * math.cos(t) - 5 * math.cos(2 * t)
-                  - 2 * math.cos(3 * t) - math.cos(4 * t)) * c / 50) for t in [i / 30 * 2 * math.pi for i in range(30)]]
-        pygame.draw.polygon(s, (255, 107, 154), heart)
     elif m in MODE_HOOKS and MODE_HOOKS[m].icon:
         MODE_HOOKS[m].call("icon", s, s.get_width())
     else:

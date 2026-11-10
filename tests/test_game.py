@@ -111,12 +111,6 @@ class ModeTests(unittest.TestCase):
         self.assertIsNone(g.solid_at(b.x, b.y))
         self.assertEqual(g.solid_at(s.body[1].x, s.body[1].y), "snake")
 
-    def test_peaceful_never_dies(self):
-        g = make(["peaceful"])
-        for _ in range(g.w * 2):
-            g.step()
-        self.assertFalse(g.over)
-
     def test_key_locks_until_collected(self):
         g = make(["key"])
         a = next(a for a in g.apples)
@@ -201,16 +195,18 @@ class FuzzTests(unittest.TestCase):
             if any(a in combo and b in combo for a, b in CONFLICTS):
                 continue
             for size in ((10, 9), (24, 21)):
-                g = Game(*size, combo + ("peaceful",), apple_count=rng.choice([1, 3, 12]),
-                         fruit="mixed", rng=random.Random(rng.random()))
+                def new_game():
+                    return Game(*size, combo, apple_count=rng.choice([1, 3, 12]), fruit="mixed",
+                                rng=random.Random(rng.random()))
+                g = new_game()
                 for _ in range(300):
                     if rng.random() < 0.3:
                         g.input(rng.choice(dirs))
                     g.started = True
                     g.step()
                     g.events.clear()
-                    if g.over:
-                        break
+                    if g.over:  # keep playing: start again
+                        g = new_game()
 
 
 class PlanTests(unittest.TestCase):

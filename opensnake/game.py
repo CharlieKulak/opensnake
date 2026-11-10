@@ -562,10 +562,6 @@ class Game:
             self._eat(s, apple)
 
     def _collide(self, s: Snake, what: str) -> None:
-        if self.has("peaceful"):
-            # Peaceful: the snake just waits until it is pointed somewhere open.
-            self.events.append(Event("bump"))
-            return
         s.dead = True
         if self.versus:  # only this snake is out; the match goes on
             self.events.append(Event("die", s.head.x, s.head.y, what, self.snakes.index(s)))
@@ -607,12 +603,7 @@ class Game:
         self.apples.remove(apple)
         if apple.poison:
             self.events.append(Event("poison", apple.x, apple.y, apple.fruit))
-            if self.has("peaceful"):
-                del s.body[max(2, len(s.body) - 3):]
-                s.no_interp = True
-                self.fill_apples()
-            else:
-                self._collide(s, "poison")
+            self._collide(s, "poison")
             return
 
         self.events.append(Event("eat", apple.x, apple.y, apple.fruit))
