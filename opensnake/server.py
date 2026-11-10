@@ -332,16 +332,16 @@ class Database:
         return cur.rowcount == 1
 
     def buy(self, user_id: int, item: str) -> int:
-        kind, _, key = item.partition(":")
-        skin = cos.SKIN_BY_ID.get(key) if kind == "skin" else None
-        if not skin or not skin.shop:
+        """Buy a shop skin or texture pack; returns the new balance."""
+        price = cos.shop_price(item)
+        if price is None:
             raise ValueError("That isn't sold in the shop.")
         if item in self.inventory(user_id):
             raise ValueError("You already own that.")
-        if self.points(user_id) < skin.price:
+        if self.points(user_id) < price:
             raise ValueError("Not enough snake points.")
         self.grant(user_id, item)
-        return self.add_points(user_id, -skin.price, f"bought {item}")
+        return self.add_points(user_id, -price, f"bought {item}")
 
     def open_crate(self, user_id: int, crate_id: str, rng=random) -> dict:
         crate = cos.CRATE_BY_ID.get(crate_id)

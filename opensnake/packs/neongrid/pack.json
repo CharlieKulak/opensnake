@@ -1,0 +1,12 @@
+{
+  "name": "Neon Grid",
+  "description": "A black grid humming with pink and cyan.",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#15153a",
+  "board_dark": "#101030",
+  "board_sand": "#2a1640",
+  "board_sand_dark": "#231236",
+  "border": "#0b0b1e",
+  "header": "#ff00c8"
+}

@@ -1,0 +1,12 @@
+{
+  "name": "Meadow",
+  "description": "Soft spring grass.",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#cde8a0",
+  "board_dark": "#c0df8c",
+  "board_sand": "#efe3b0",
+  "board_sand_dark": "#e6d79c",
+  "border": "#7fae4c",
+  "header": "#5a8f2e"
+}

@@ -1,0 +1,12 @@
+{
+  "name": "Desert Sand",
+  "description": "Sun-baked dunes.",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#f3dfb3",
+  "board_dark": "#ead29c",
+  "board_sand": "#f7e8c8",
+  "board_sand_dark": "#efdcb3",
+  "border": "#c9965a",
+  "header": "#b5813c"
+}

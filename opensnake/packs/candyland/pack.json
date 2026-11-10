@@ -1,0 +1,12 @@
+{
+  "name": "Candyland",
+  "description": "Pastel pinks and blues.",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#ffe3f1",
+  "board_dark": "#ffd2e8",
+  "board_sand": "#d8f4ff",
+  "board_sand_dark": "#c8eeff",
+  "border": "#ff9ccb",
+  "header": "#ff5fa8"
+}

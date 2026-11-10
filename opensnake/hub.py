@@ -1041,8 +1041,8 @@ class Hub:
         if self.opening:
             self.draw_opening(pygame.Rect(x, y, w, bottom - y), now)
         elif self.store_tab == "shop":
-            items = [f"skin:{s.id}" for s in cos.SKINS if s.shop]
-            self.text("Common, Uncommon and Rare skins. Epic, Legendary and Mythic ones only come from loot boxes.",
+            items = cos.SHOP_ITEMS
+            self.text("Skins and texture packs. Epic, Legendary and Mythic items only come from loot boxes.",
                       ph * 0.022, MUTED, topleft=(x, y))
             y += ph * 0.035
             self.item_grid(pygame.Rect(x, y, w, bottom - y), items, now, owned, points, shop=True)
@@ -1082,7 +1082,7 @@ class Hub:
             b = pygame.Rect(r.x + 4, r.y + int(r.h * 0.77), r.w - 8, int(r.h * 0.22))
             kind, _, key = item.partition(":")
             if shop:
-                price = cos.SKIN_BY_ID[key].price
+                price = cos.shop_price(item)
                 if item in owned:
                     self.button(b, "Owned", lambda: None, False, False)
                 else:
@@ -1102,7 +1102,8 @@ class Hub:
         n = len(cos.CRATES)
         gap = 14
         cw = (area.w - gap * (n - 1)) // n
-        ch = min(area.h - 10, int(cw * 1.6))
+        ch = min(area.h - 50, max(int(cw * 1.6), int(area.h * 0.8)))
+        fs = min(ch * 0.05, cw * 0.11)  # text size: as big as the card's height and width allow
         for i, crate in enumerate(cos.CRATES):
             r = pygame.Rect(area.x + i * (cw + gap), area.y, cw, ch)
             pygame.draw.rect(scr, CARD, r, border_radius=12)
@@ -1119,15 +1120,15 @@ class Hub:
             pygame.draw.rect(scr, dark, (box.centerx - bw * 0.07, lid.y, bw * 0.14, box.bottom - lid.y))
             pygame.draw.circle(scr, (255, 240, 180), (box.centerx, lid.bottom), bw * 0.07)
             y = box.bottom + 10
-            self.text(crate.name, ch * 0.075, INK, midtop=(r.centerx, y))
-            y += ch * 0.09
+            self.text(crate.name, fs * 1.35, INK, midtop=(r.centerx, y))
+            y += fs * 2.2
             for rarity in cos.RARITIES:
                 pct = crate.odds.get(rarity)
                 if pct:
-                    self.text(f"{cos.RARITY_NAMES[rarity]}  {pct:g}%", ch * 0.052, cos.RARITY_COLORS[rarity],
+                    self.text(f"{cos.RARITY_NAMES[rarity]}  {pct:g}%", fs, cos.RARITY_COLORS[rarity],
                               midtop=(r.centerx, y))
-                    y += ch * 0.06
-            b = pygame.Rect(r.x + 10, r.bottom - int(ch * 0.13) - 8, r.w - 20, int(ch * 0.13))
+                    y += fs * 1.35
+            b = pygame.Rect(r.x + 10, r.bottom - int(fs * 2.4) - 10, r.w - 20, int(fs * 2.4))
             self.button(b, f"Open  {cos.format_points(crate.price)}", lambda c=crate: self.open_crate(c), True,
                         points >= crate.price and not self.busy)
         self.text("Loot boxes hold skins and texture packs. Duplicates turn back into snake points.",

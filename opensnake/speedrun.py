@@ -92,6 +92,18 @@ CATEGORIES = [
              10, 9, ("cheese",), goal=20),
     Category("statues", "Statue Garden", "Statue mode: eating turns your body to stone. Eat 15.",
              12, 11, ("statue",), goal=15),
+    Category("snail", "Snail Pace", "The slowest speed: plan every move. Eat 20.", 10, 9, goal=20, tick_ms=260),
+    Category("bigboard", "Big Board", "One apple at a time on a 30 x 20 board. Eat 20.", 30, 20, goal=20),
+    Category("fruitsalad", "Fruit Salad", "Mixed fruit, 5 at a time. Eat 40.", 14, 12, goal=40, fruit_count=5,
+             fruit="mixed"),
+    Category("shields", "Shield Rush", "Shield mode: grab shields to survive a crash. Eat 15.",
+             12, 11, ("shield",), goal=15),
+    Category("arrows", "Arrow Maze", "Arrow mode: arrow tiles turn you. Eat 15.", 12, 11, ("arrow",), goal=15),
+    Category("magnet", "Magnet Pull", "Magnet mode: nearby fruit flies to you. Eat 25.", 12, 11, ("magnet",),
+             goal=25),
+    Category("yinyang", "Yin Yang", "Steer two mirrored snakes at once. Eat 10.", 12, 11, ("yinyang",), goal=10),
+    Category("chaos", "Chaos", "Wall, Gate and Arrow modes at once. Eat 15.", 14, 12, ("wall", "gate", "arrow"),
+             goal=15),
 ]
 CATEGORY_BY_ID = {c.id: c for c in CATEGORIES}
 

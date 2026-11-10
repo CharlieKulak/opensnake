@@ -1,0 +1,12 @@
+{
+  "name": "Toxic Swamp",
+  "description": "Murky greens with a poisonous glow.",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#3c5216",
+  "board_dark": "#344712",
+  "board_sand": "#5a6b1f",
+  "board_sand_dark": "#4f5e1b",
+  "border": "#1f2a12",
+  "header": "#151d0c"
+}

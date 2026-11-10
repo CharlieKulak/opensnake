@@ -1,0 +1,12 @@
+{
+  "name": "Autumn",
+  "description": "Fallen leaves in orange and red.",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#f2c48a",
+  "board_dark": "#e8b070",
+  "board_sand": "#f5d8b0",
+  "board_sand_dark": "#ecc999",
+  "border": "#c0602a",
+  "header": "#a8441c"
+}

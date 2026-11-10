@@ -1,0 +1,12 @@
+{
+  "name": "Lava Lake",
+  "description": "Black rock over molten orange.",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#4a1c12",
+  "board_dark": "#3e1610",
+  "board_sand": "#6b2a12",
+  "board_sand_dark": "#5e240f",
+  "border": "#2a0d08",
+  "header": "#d84315"
+}

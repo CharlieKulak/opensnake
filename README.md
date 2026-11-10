@@ -194,6 +194,14 @@ fixes the board, speed, modes and goal, so everyone's times are comparable.
 | Dimension Drift | Eat 15 | 12 x 11 | Dimension mode |
 | Swiss Sprint | Eat 20 | 10 x 9 | Cheese mode |
 | Statue Garden | Eat 15 | 12 x 11 | Statue mode |
+| Snail Pace | Eat 20 | 10 x 9 | The slowest speed (260 ms per cell) |
+| Big Board | Eat 20 | 30 x 20 | One apple at a time |
+| Fruit Salad | Eat 40 | 14 x 12 | Mixed fruit, 5 at a time |
+| Shield Rush | Eat 15 | 12 x 11 | Shield mode |
+| Arrow Maze | Eat 15 | 12 x 11 | Arrow mode |
+| Magnet Pull | Eat 25 | 12 x 11 | Magnet mode |
+| Yin Yang | Eat 10 | 12 x 11 | Yin Yang mode |
+| Chaos | Eat 15 | 14 x 12 | Wall, Gate and Arrow modes |
 
 Unless noted, categories run at the Default speed (130 ms per cell).
 
@@ -358,18 +366,28 @@ you're logged in to:
 Community categories (see below) keep their PRs and WRs but don't pay snake
 points. With mods on, rounds don't pay either.
 
-**Store.** The **Shop** sells Common, Uncommon and Rare skins outright.
-**Loot boxes** cost more as they get better (Bronze 2,000, Silver 7,500,
-Gold 25,000, Diamond 100,000) and each shows its odds. Opening one spins a
-reel of items that slows down onto your prize. Epic, Legendary and Mythic
-skins, and six texture packs (Midnight, Sakura, Desert Night, Synthwave,
-Arctic and Obsidian), only come from loot boxes. A duplicate turns back into
-snake points. There are 70 skins: plain colours, stripes, metals that
-shimmer, and animated ones that flow, pulse and glow, plus 20 **Stand**
-skins themed on JoJo's Bizarre Adventure (Star Platinum, The World, King
-Crimson and more), which only come from loot boxes. **Collection** is
-where you equip a skin (it's used whenever you play single-player, even
-offline) and turn won texture packs on.
+**Store.** The **Shop** sells Common, Uncommon and Rare skins, and four
+texture packs (Meadow, Desert Sand, Autumn and Ocean Breeze), outright.
+**Loot boxes** cost more as they get better and each shows its odds:
+
+| Loot box | Cost | Can give |
+| --- | --- | --- |
+| Bronze | 2,000 | Common up to Mythic (mostly Common) |
+| Silver | 7,500 | Common up to Mythic |
+| Gold | 25,000 | Common up to Mythic (mostly Rare) |
+| Diamond | 100,000 | Uncommon up to Mythic |
+| Royal | 500,000 | Legendary (85%) and Mythic (15%) only |
+
+Opening one spins a reel of items that slows down onto your prize. Epic,
+Legendary and Mythic items only come from loot boxes, and a duplicate turns
+back into snake points. There are 94 skins: plain colours, stripes, metals
+that shimmer, and animated ones that flow, pulse and glow, including 34
+**Stand** skins themed on JoJo's Bizarre Adventure (Star Platinum, The
+World, Gold Experience Requiem, Tusk Act 4 and more). There are 16 texture
+packs: the four in the Shop and twelve loot-box ones (such as Neon Grid,
+Lava Lake and Golden Hour). **Collection** is where you equip a skin (it's
+used whenever you play single-player, even offline) and turn your texture
+packs on.
 
 **Ranks.** Versus matches against other people earn rank points (RP): +30
 for a win, -20 for a loss, +5 for a draw. Matches with only bots for
@@ -402,7 +420,7 @@ player on the site by a score out of 100, made of four parts:
 | World records held | 30 | 5 |
 | PRs (built-in speedrun categories you've finished) | 25 | all of them |
 | Snake points earned | 25 | 1,000,000 (the first points count the most) |
-| Skins owned | 20 | all 70 |
+| Skins owned | 20 | all of them (94) |
 
 Only built-in speedrun categories count, since anyone can make a new
 community category and hold its record straight away. Snake points count
@@ -529,9 +547,9 @@ reopen the Packs & Mods screen.
 
 ### Built-in packs
 
-OpenSnake ships with three packs, all off by default (plus six colour-only
-packs that are prizes in the online store's loot boxes, and only show up
-here once you've won them):
+OpenSnake ships with three packs, all off by default (plus sixteen
+colour-only packs from the online store, which only show up here once you've
+bought or won them):
 
 | Pack | Style |
 | --- | --- |

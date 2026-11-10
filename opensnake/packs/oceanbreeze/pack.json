@@ -1,0 +1,12 @@
+{
+  "name": "Ocean Breeze",
+  "description": "Light seaside blues.",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#d7f0f7",
+  "board_dark": "#c4e7f1",
+  "board_sand": "#f2ead2",
+  "board_sand_dark": "#e8dcc0",
+  "border": "#5aa9c4",
+  "header": "#1f7a9e"
+}

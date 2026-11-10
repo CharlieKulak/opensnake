@@ -15,11 +15,11 @@ from opensnake.speedrun import CATEGORY_BY_ID, make_custom  # noqa: E402
 
 
 class CatalogueTests(ServerTestCase):
-    def test_seventy_skins_with_the_rarest_only_in_loot_boxes(self):
-        self.assertEqual(len(cos.SKINS), 70)
-        self.assertEqual(len({s.id for s in cos.SKINS}), 70)
+    def test_skins_with_the_rarest_only_in_loot_boxes(self):
+        self.assertEqual(len(cos.SKINS), 94)
+        self.assertEqual(len({s.id for s in cos.SKINS}), 94)
         stands = [s for s in cos.SKINS if s.series == "Stand"]
-        self.assertEqual(len(stands), 20)
+        self.assertEqual(len(stands), 34)
         self.assertTrue(all(not s.shop for s in stands))
         for s in cos.SKINS:
             self.assertIn(s.rarity, cos.RARITIES)
@@ -36,6 +36,19 @@ class CatalogueTests(ServerTestCase):
         got = Counter(cos.item_rarity(cos.roll(cos.CRATE_BY_ID["bronze"], rng)) for _ in range(20000))
         self.assertAlmostEqual(got["common"] / 20000, 0.70, delta=0.02)
         self.assertNotIn("common", {cos.item_rarity(cos.roll(cos.CRATE_BY_ID["diamond"], rng)) for _ in range(2000)})
+        royal = Counter(cos.item_rarity(cos.roll(cos.CRATE_BY_ID["royal"], rng)) for _ in range(5000))
+        self.assertEqual(set(royal), {"legendary", "mythic"})  # legendary and above only
+        self.assertAlmostEqual(royal["mythic"] / 5000, 0.15, delta=0.02)
+        self.assertEqual(cos.CRATE_BY_ID["royal"].price, 500_000)
+
+    def test_packs(self):
+        from opensnake.addons import BUILTIN_PACKS
+        for pack in cos.PACKS:  # every catalogue pack ships with the game, locked until owned
+            meta = (BUILTIN_PACKS / pack.id / "pack.json").read_text()
+            self.assertIn('"locked": true', meta, pack.id)
+        sold = [p for p in cos.PACKS if p.price]
+        self.assertEqual(len(sold), 4)
+        self.assertTrue(all(p.rarity not in ("epic", "legendary", "mythic") for p in sold))
 
     def test_skin_colours_are_valid(self):
         for s in cos.SKINS:
@@ -96,6 +109,12 @@ class StoreTests(ServerTestCase):
         self.assertEqual((await self.post("/api/store/buy", {"item": "skin:mint"}, token))[1]["points"], 4500)
         self.assertIn("already", (await self.post("/api/store/buy", {"item": "skin:mint"}, token))[1]["error"])
         self.assertIn("isn't sold", (await self.post("/api/store/buy", {"item": "skin:celestial"}, token))[1]["error"])
+        self.assertIn("isn't sold", (await self.post("/api/store/buy", {"item": "pack:goldenhour"}, token))[1]["error"])
+        self.assertIn("Not enough", (await self.post("/api/store/buy", {"item": "pack:meadow"}, token))[1]["error"])
+        self.server.db.add_points(1, 6_000, "test")
+        status, res = await self.post("/api/store/buy", {"item": "pack:meadow"}, token)  # packs are sold too
+        self.assertEqual((status, res["points"]), (200, 4500))
+        self.assertIn("pack:meadow", (await self.get("/api/me", token))[1]["inventory"])
         status, me = await self.post("/api/profile", {"skin": "mint"}, token)
         self.assertEqual((status, me["skin"]), (200, "mint"))
         self.assertIn("don't own", (await self.post("/api/profile", {"skin": "sky"}, token))[1]["error"])

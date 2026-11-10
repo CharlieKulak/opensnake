@@ -233,6 +233,36 @@ SKINS = [
            "#f2c14e", glow=True),
     _stand("theworld", "The World", "mythic", "shimmer", ["#d9a91e", "#fff2a0"], "#2f7a3e", glow=True),
     _stand("kingcrimson", "King Crimson", "mythic", "pulse", ["#a3122b", "#efe6dc"], "#ffd27a", glow=True),
+    _stand("thefool", "The Fool", "epic", "grad", ["#c9a86a", "#3b3b3b"], "#1e1e1e"),
+    _stand("heavensdoor", "Heaven's Door", "epic", "stripes", ["#fbf6ee", "#f2a9c4"], "#7a5c4f"),
+    _stand("harvest", "Harvest", "epic", "stripes", ["#f2c230", "#f28c28"], "#7a4a12"),
+    _stand("spicegirl", "Spice Girl", "epic", "stripes", ["#f48fb1", "#ffe066"], "#b0306a"),
+    _stand("metallica", "Metallica", "epic", "shimmer", ["#7a1020", "#c9ced6"], "#3b0710"),
+    _stand("whitesnake", "Whitesnake", "epic", "stripes", ["#f4f4f4", "#1f1f1f", "#f4f4f4", "#9e9e9e"], "#3a3a3a"),
+    _stand("softandwet", "Soft & Wet", "epic", "flow", ["#f6f8fb", "#8ec5ff", "#f6f8fb", "#ffd23f"], "#3a7bd5"),
+    _stand("horus", "Horus", "epic", "pulse", ["#9fe3ff", "#e8fbff"], "#4aa8d8", glow=True),
+    _stand("cream", "Cream", "legendary", "pulse", ["#0b0b10", "#3d1458"], "#f5f5f5", glow=True),
+    _stand("cmoon", "C-MOON", "legendary", "stripes", ["#3fbf5f", "#f0f6f0"], "#b7ff9f", glow=True),
+    _stand("gratefuldead", "The Grateful Dead", "legendary", "pulse", ["#5b2a86", "#7bc96f"], "#d6a8ff", glow=True),
+    _stand("anubis", "Anubis", "legendary", "shimmer", ["#6c4a9e", "#e6e8ee"], "#2b1d42", glow=True),
+    _stand("ger", "Gold Experience Requiem", "mythic", "flow", ["#ffd84a", "#fff8d6", "#ffb300", "#fff8d6"],
+           "#ffffff", glow=True),
+    _stand("tuskact4", "Tusk Act 4", "mythic", "flow", ["#f48fb1", "#ffd54f", "#9b59d0", "#ffd54f"],
+           "#fff3c4", glow=True),
+
+    # More loot-box-only skins
+    _skin("comet", "Comet", "epic", "flow", ["#1b2a6b", "#6fa8ff", "#ffffff", "#6fa8ff"]),
+    _skin("jellyfish", "Jellyfish", "epic", "pulse", ["#ff7ac6", "#7af0ff"], "#ffd1ef", glow=True),
+    _skin("peacock", "Peacock", "epic", "flow", ["#0e7c86", "#1f4fb5", "#2fae5f", "#d4a72c"]),
+    _skin("koi", "Koi", "epic", "stripes", ["#ff7a1a", "#fafafa", "#ff7a1a", "#1d1d1d"]),
+    _skin("phoenix", "Phoenix", "legendary", "flow", ["#d7261e", "#ff8a00", "#ffd23f", "#ff8a00"], "#fff1a8",
+          glow=True),
+    _skin("thunderbird", "Thunderbird", "legendary", "pulse", ["#ffe600", "#1e40ff"], "#fff59d", glow=True),
+    _skin("cyber", "Cyber", "legendary", "flow", ["#0a0f0a", "#39ff14", "#0a0f0a", "#00e5ff"], "#39ff14",
+          glow=True),
+    _skin("supernova", "Supernova", "mythic", "rainbow", ["#ffffff"], "#ffffff", glow=True),
+    _skin("eclipse", "Eclipse", "mythic", "pulse", ["#050505", "#ffb300"], "#ffe082", glow=True),
+    _skin("dragonscale", "Dragon Scale", "mythic", "shimmer", ["#0b5d3b", "#ffd700"], "#c8ffdf", glow=True),
 ]
 SKIN_BY_ID = {s.id: s for s in SKINS}
 
@@ -291,6 +321,7 @@ class LootPack:
     name: str
     rarity: str
     swatch: tuple  # colours for the store's preview
+    price: int | None = None  # None: only from loot boxes
 
 
 PACKS = [
@@ -300,6 +331,19 @@ PACKS = [
     LootPack("synthwave", "Synthwave", "legendary", (_c("#2b0f54"), _c("#ff2a6d"), _c("#05d9e8"))),
     LootPack("arctic", "Arctic", "legendary", (_c("#e3f2fd"), _c("#b3e5fc"), _c("#0277bd"))),
     LootPack("obsidian", "Obsidian", "mythic", (_c("#0a0a0f"), _c("#1d1b2e"), _c("#ffd54f"))),
+    LootPack("lavalake", "Lava Lake", "epic", (_c("#3a1410"), _c("#d84315"), _c("#ffb300"))),
+    LootPack("deepsea", "Deep Sea", "epic", (_c("#062a3d"), _c("#0b4f6c"), _c("#4dd0e1"))),
+    LootPack("toxicswamp", "Toxic Swamp", "epic", (_c("#1f2a12"), _c("#4f6b1a"), _c("#b6ff3b"))),
+    LootPack("neongrid", "Neon Grid", "legendary", (_c("#0b0b1e"), _c("#ff00c8"), _c("#00f0ff"))),
+    LootPack("candyland", "Candyland", "legendary", (_c("#ffe3f1"), _c("#c8f2ff"), _c("#ff5fa8"))),
+    LootPack("goldenhour", "Golden Hour", "mythic", (_c("#3d2a12"), _c("#e8a33d"), _c("#fff1c1"))),
+    # sold in the shop (they can turn up in loot boxes too)
+    LootPack("meadow", "Meadow", "uncommon", (_c("#cde8a0"), _c("#b8dc84"), _c("#5a8f2e")), price=6_000),
+    LootPack("desertsand", "Desert Sand", "uncommon", (_c("#f3dfb3"), _c("#e8cf98"), _c("#b5813c")),
+             price=6_000),
+    LootPack("autumn", "Autumn", "rare", (_c("#f2c48a"), _c("#e8b070"), _c("#a8441c")), price=12_000),
+    LootPack("oceanbreeze", "Ocean Breeze", "rare", (_c("#d7f0f7"), _c("#bfe6f2"), _c("#1f7a9e")),
+             price=12_000),
 ]
 PACK_BY_ID = {p.id: p for p in PACKS}
 
@@ -329,6 +373,19 @@ def item_name(item: str) -> str:
 ALL_ITEMS = [f"skin:{s.id}" for s in SKINS] + [f"pack:{p.id}" for p in PACKS]
 
 
+def shop_price(item: str) -> int | None:
+    """What an item costs in the shop, or None if it only comes from loot boxes."""
+    kind, _, key = item.partition(":")
+    if kind == "skin" and key in SKIN_BY_ID:
+        return SKIN_BY_ID[key].price
+    if kind == "pack" and key in PACK_BY_ID:
+        return PACK_BY_ID[key].price
+    return None
+
+
+SHOP_ITEMS = [it for it in ALL_ITEMS if shop_price(it) is not None]
+
+
 # ---- loot boxes ----------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -349,6 +406,7 @@ CRATES = [
           {"common": 10, "uncommon": 30, "rare": 35, "epic": 18, "legendary": 6, "mythic": 1}),
     Crate("diamond", "Diamond Crate", 100_000, (80, 210, 240),
           {"uncommon": 10, "rare": 35, "epic": 35, "legendary": 16, "mythic": 4}),
+    Crate("royal", "Royal Crate", 500_000, (150, 60, 220), {"legendary": 85, "mythic": 15}),
 ]
 CRATE_BY_ID = {c.id: c for c in CRATES}
 

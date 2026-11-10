@@ -1,0 +1,12 @@
+{
+  "name": "Deep Sea",
+  "description": "Dark water lit by glowing cyan.",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#0b4f6c",
+  "board_dark": "#09435c",
+  "board_sand": "#1d6f7a",
+  "board_sand_dark": "#18626c",
+  "border": "#062a3d",
+  "header": "#04202f"
+}

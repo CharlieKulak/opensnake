@@ -1,0 +1,12 @@
+{
+  "name": "Golden Hour",
+  "description": "Warm sunset gold.",
+  "author": "OpenSnake",
+  "locked": true,
+  "board_light": "#e8a33d",
+  "board_dark": "#dc962f",
+  "board_sand": "#f2c26b",
+  "board_sand_dark": "#e8b65c",
+  "border": "#7a4a12",
+  "header": "#3d2a12"
+}
