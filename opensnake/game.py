@@ -14,8 +14,10 @@ from .registry import MODE_HOOKS
 DIRS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 OPPOSITE = {"up": "down", "down": "up", "left": "right", "right": "left"}
 # Online versus: how many moves late a player's turn can arrive and still be
-# applied where they pressed it (see Game.retro_turn).
-MAX_LATE_MOVES = 2
+# applied where they pressed it (see Game.retro_turn). Players' games aim each
+# turn at a move it can reach the server in time for, so this is only a safety
+# net for an unusually slow message: other players see that snake shift a cell.
+MAX_LATE_MOVES = 1
 FRUITS = ["apple", "orange", "cherry", "grape", "strawberry", "lemon", "banana"]
 
 

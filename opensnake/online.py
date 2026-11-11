@@ -104,9 +104,9 @@ class Online:
         self.tick_ms = 130.0
         self.countdown: int | None = None
         self.result: dict | None = None
-        # Turns we've sent but the server hasn't applied yet: [(direction, sent_at_ms)].
-        # They're shown on our own snake straight away (client-side prediction).
-        self.pending: list[tuple[str, int]] = []
+        # Turns we've sent but the server hasn't applied yet: [(direction, sent at (ms), move)].
+        # Each shows on our own snake as soon as the server will make it (client-side prediction).
+        self.pending: list[tuple[str, int, int]] = []
         self.ping_ms: float | None = None  # round trip to the server, shown in matches
         self.last_ping = 0
         # public match search
@@ -685,19 +685,32 @@ class Online:
         g = self.game
         return g.snakes[self.you] if g and 0 <= self.you < len(g.snakes) else None
 
+    LAG_MARGIN_MS = 20  # allowance for the ping varying a little
+
     def _predict(self) -> None:
-        """Show our not-yet-applied turn on our own snake, so it reacts instantly."""
+        """Show our own turn on our snake as soon as the server will make it, so it reacts instantly."""
         me = self._my_snake()
         if not me or me.dead:
             self.pending = []
             return
         now = pygame.time.get_ticks()
-        if self.pending and me.dir == self.pending[0][0]:
-            self.pending.pop(0)  # the server has applied it
-        # Drop turns the server evidently didn't take (e.g. an illegal reverse).
-        self.pending = [(d, at) for d, at in self.pending if now - at < 3 * self.tick_ms + 250]
-        if self.pending:
-            me.planned = self.pending[0][0]  # the renderer curves the head this way
+        # The server has made the move a turn was for (or evidently didn't take it): it's done.
+        self.pending = [(d, at, step) for d, at, step in self.pending
+                        if step > self.game.tick and now - at < 3 * self.tick_ms + 250]
+        if self.pending and self.pending[0][2] == self.game.tick + 1:
+            me.planned = self.pending[0][0]  # it turns at this cell: the renderer curves the head
+
+    def moves_ahead(self) -> int:
+        """How many moves from now a turn pressed now can reach the server in time for (1 = this cell).
+
+        The screen shows the server's last move, a little after it happened; the turn
+        then takes as long again to get back. Like single-player, where a turn pressed
+        once the head is halfway into a cell happens at the next one, a turn pressed too
+        late in the cell for your ping is aimed at the next cell (or further, on a very
+        slow connection)."""
+        rtt = self.ping_ms if self.ping_ms is not None else 120
+        tick = max(1.0, self.tick_ms)
+        return int((self.app.acc + rtt + self.LAG_MARGIN_MS) // tick) + 1
 
     def turn(self, d: str) -> None:
         me = self._my_snake()
@@ -706,11 +719,14 @@ class Online:
         last = self.pending[-1][0] if self.pending else me.dir
         if d in (last, OPPOSITE[last]) or d not in DIRS or len(self.pending) >= 2:
             return  # same as the server would ignore
-        # The move this turn is for: the one after the state on screen (or after the
-        # turns already waiting). The server uses it to make up for lag.
-        step = self.game.tick + 1 + len(self.pending)
+        # The move this turn is for: this cell if the server can get it in time, else the
+        # next (or the one after any turns already waiting). The server holds it until then.
+        if self.pending:
+            step = self.pending[-1][2] + 1
+        else:
+            step = self.game.tick + self.moves_ahead()
         self.send({"t": "input", "d": d, "step": step})
-        self.pending.append((d, pygame.time.get_ticks()))
+        self.pending.append((d, pygame.time.get_ticks(), step))
         self._predict()
         self.app.sfx.play("turn")
 

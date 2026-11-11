@@ -429,11 +429,14 @@ The top three get medals, your own row is highlighted, and if you're outside
 the top 100 your place is shown at the bottom.
 
 **Lag.** The server runs the match, so a turn has to reach it before the
-snake's next move. Your own snake turns on your screen straight away, and if
-your turn reaches the server a move or two late (ping over about 50 ms), the
-server still makes the turn happen where you pressed it, as long as the snake
-only went straight into empty cells meanwhile. Other players' snakes can
-sometimes shift a cell or two on your screen when that happens to their turns.
+snake's next move. Your game knows your ping, so it works out whether a turn
+you press can get there in time for the cell your snake is in. If it can, the
+turn happens there; if you press it too late in the cell for your connection,
+it happens at the next cell (like single-player, where a turn pressed once
+the head is halfway into a cell happens at the next one). Either way your
+snake shows the turn exactly where it will happen, so nothing jumps, for you
+or for anyone else. The ping and frame rate are in the middle of the match
+header.
 
 Crashing knocks only your snake out; you can keep watching. Two snakes moving
 into the same cell are both knocked out. You don't need an account to play

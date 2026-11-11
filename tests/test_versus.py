@@ -121,16 +121,13 @@ class LagCompensationTests(unittest.TestCase):
         self.assertEqual(self.path(late), self.path(on_time))
         self.assertEqual(late.snakes[0].dir, "up")
 
-    def test_two_moves_late(self):
-        on_time, late = versus([0, 1]), versus([0, 1])
-        on_time.step()
-        on_time.input_for(0, "down")
-        on_time.step()
-        on_time.step()
+    def test_only_one_move_back(self):
+        # players' games aim turns at a move they can reach in time; rewinding further
+        # would make that snake jump on everyone else's screen
+        g = versus([0, 1])
         for _ in range(3):
-            late.step()
-        self.assertTrue(late.retro_turn(0, "down", 2))
-        self.assertEqual(self.path(late), self.path(on_time))
+            g.step()
+        self.assertFalse(g.retro_turn(0, "down", 2))
 
     def test_only_when_fair(self):
         g = versus([0, 1])
@@ -183,6 +180,14 @@ class LagCompensationTests(unittest.TestCase):
         asyncio.run(server.on_message(host, {"t": "input", "d": "up", "step": 2}))
         self.assertEqual(room.game.snakes[0].dir, "up")
         self.assertEqual(room.game.snakes[0].queue, [])  # applied, not queued for later
+        # a turn sent ahead for a later move waits for it
+        asyncio.run(server.on_message(host, {"t": "input", "d": "right", "step": room.game.tick + 2}))
+        room.apply_scheduled()
+        room.game.step()
+        self.assertEqual(room.game.snakes[0].dir, "up")     # not yet...
+        room.apply_scheduled()
+        room.game.step()
+        self.assertEqual(room.game.snakes[0].dir, "right")  # ...now
 
 
 class StateTests(unittest.TestCase):
@@ -232,6 +237,7 @@ class PredictionTests(unittest.TestCase):
         self.on.sock = FakeSocket()
         self.on.my_id = 1
         self.on.on_message({"t": "start", "you": 1, "tick_ms": 130, "state": game_to_state(self.server)})
+        self.on.ping_ms = 20  # a quick connection: turns early in a cell make that cell
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -255,20 +261,30 @@ class PredictionTests(unittest.TestCase):
         self.assertEqual(me().dir, "up")
         self.assertEqual(self.on.pending, [])
 
-    def test_prediction_survives_states_until_applied(self):
+    def test_a_turn_too_late_for_this_cell_waits_for_the_next(self):
+        me = lambda: self.on.game.snakes[1]
+        self.app.acc = 120  # the head is nearly through its cell: the turn can't reach the server in time
         self.on.turn("down")
-        self.sent.clear()  # pretend the input is still on its way: the server hasn't seen it
+        self.assertEqual(self.sent, [{"t": "input", "d": "down", "step": 2}])
+        self.assertIsNone(me().planned)  # not shown here: it won't happen here
+        self.sent.clear()                # (the server holds it for move 2)
         self.server.started = True
         self.server.step()
+        self.app.acc = 0
         self.on.on_message({"t": "state", "s": game_to_state(self.server)})
-        self.assertEqual(self.on.game.snakes[1].dir, "left")
-        self.assertEqual(self.on.game.snakes[1].planned, "down")  # still predicted
+        self.assertEqual(me().planned, "down")  # now it's this cell: shown at once
+
+    def test_turns_aim_further_ahead_on_a_slow_connection(self):
+        self.app.acc = 0
+        for ping, ahead in ((20, 1), (100, 1), (115, 2), (250, 3)):
+            self.on.ping_ms = ping
+            self.assertEqual(self.on.moves_ahead(), ahead, ping)
 
     def test_unapplied_turn_is_dropped_eventually(self):
         import pygame
         self.on.turn("up")
         self.sent.clear()
-        self.on.pending = [("up", pygame.time.get_ticks() - 10_000)]  # sent long ago, never applied
+        self.on.pending = [("up", pygame.time.get_ticks() - 10_000, 5)]  # sent long ago, never applied
         self.server.started = True
         self.server.step()
         self.on.on_message({"t": "state", "s": game_to_state(self.server)})

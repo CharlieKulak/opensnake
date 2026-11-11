@@ -553,6 +553,7 @@ class Room:
         self.state = "lobby"
         self.game: Game | None = None
         self.task: asyncio.Task | None = None
+        self.scheduled: list[tuple[int, int, str]] = []  # (move, snake, direction): turns for a later move
         self.name = f"{host.name}'s match"
         self.public = False  # public matches show up in everyone's match search
 
@@ -662,6 +663,7 @@ class Room:
         teams = [sum(1 for p in self.players if p.team == t) for t in (0, 1)]
         if not all(teams):
             return "Both teams need at least one player."
+        self.scheduled = []
         order = sorted(self.players, key=lambda p: p.team)
         w, h = VERSUS_SIZES[self.settings["size"]]
         self.game = Game(w, h, self.settings["modes"], self.settings["apples"],
@@ -690,6 +692,7 @@ class Room:
         deadline = loop.time()
         bot_rng = random.Random()
         while not g.over and self.humans:
+            self.apply_scheduled()
             for p in self.players:
                 if p.bot and p.snake >= 0:
                     d = bot_choose(g, p.snake, bot_rng, p.bot)
@@ -705,6 +708,14 @@ class Room:
         await self.broadcast({"t": "over", "winner": g.winner, "scores": [g.team_score(0), g.team_score(1)]})
         await self.reward(g)
         await self.broadcast(self.info())
+
+    def apply_scheduled(self) -> None:
+        """Hand the game the players' turns that were sent ahead for the move it's about to make."""
+        g = self.game
+        due = sorted(x for x in self.scheduled if x[0] <= g.tick + 1)
+        self.scheduled = [x for x in self.scheduled if x[0] > g.tick + 1]
+        for _step, snake, d in due:
+            g.input_for(snake, d)
 
     async def reward(self, g: Game) -> None:
         """Snake points for everyone with an account, and rank points if they played other people."""
@@ -1179,11 +1190,15 @@ class Server:
         if t == "input" and room and room.game and room.state == "playing":
             g, d = room.game, m.get("d")
             if d in DIRS and p.snake >= 0:
-                # "step": the move the player meant this turn for. If it arrived after
-                # that move (lag), apply it there anyway when that's fair.
+                # "step": the move the player's game aimed this turn at (allowing for their
+                # ping). Hold it until then; if it's late anyway, apply it there when fair.
                 step = m.get("step")
-                late = g.tick - step + 1 if isinstance(step, int) else 0
-                if not (1 <= late <= MAX_LATE_MOVES and g.retro_turn(p.snake, d, late)):
+                if not isinstance(step, int) or step == g.tick + 1:
+                    g.input_for(p.snake, d)
+                elif step > g.tick + 1:
+                    if step <= g.tick + 4 and len(room.scheduled) < 40:  # (no far-future or flood)
+                        room.scheduled.append((step, p.snake, d))
+                elif not (g.tick - step + 1 <= MAX_LATE_MOVES and g.retro_turn(p.snake, d, g.tick - step + 1)):
                     g.input_for(p.snake, d)
             return
         if t == "host":
