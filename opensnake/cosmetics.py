@@ -325,7 +325,9 @@ SKIN_BY_ID = {s.id: s for s in SKINS}
 
 
 def _lerp(a, b, t):
-    return (round(a[0] + (b[0] - a[0]) * t), round(a[1] + (b[1] - a[1]) * t), round(a[2] + (b[2] - a[2]) * t))
+    """A colour between a and b (t from 0 to 1), always a valid colour."""
+    t = min(1.0, max(0.0, t))
+    return tuple(min(255, max(0, round(x + (y - x) * t))) for x, y in zip(a, b))
 
 
 def _cycle(colors, t):
@@ -339,7 +341,8 @@ def _cycle(colors, t):
 def skin_color(skin: Skin, i: int, n: int, now: float) -> tuple:
     """Colour of body cell ``i`` (0 = head) of an ``n``-cell snake at time ``now`` (ms)."""
     c = skin.colors
-    k = i / max(1, n - 1)
+    # (the renderer also colours the cell the tail is sliding out of, one past the end)
+    k = min(1.0, max(0.0, i / max(1, n - 1)))
     if skin.pattern == "grad":
         return _lerp(c[0], c[-1], k)
     if skin.pattern == "stripes":

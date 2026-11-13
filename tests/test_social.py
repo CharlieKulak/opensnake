@@ -50,6 +50,29 @@ class CatalogueTests(ServerTestCase):
         self.assertEqual(len(sold), 4)
         self.assertTrue(all(p.rarity not in ("epic", "legendary", "mythic") for p in sold))
 
+    def test_every_skin_draws_on_a_moving_snake(self):
+        """Regression: gradient skins made an invalid colour for the cell the tail slides out of,
+        which crashed the game as soon as the snake moved (it froze in the browser)."""
+        import os
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        import pygame
+        pygame.init()
+        pygame.display.set_mode((10, 10))
+        from opensnake.game import Game
+        from opensnake.render import Renderer, View
+        r = Renderer()
+        for skin in cos.SKINS:
+            g = Game(10, 9, (), 1, rng=random.Random(1))
+            g.started = True
+            for _ in range(3):
+                g.step()
+                for t in (0.0, 0.5, 0.99):
+                    r.draw_board(g, t, 1000.0, ((61, 111, 232), (122, 162, 255)),
+                                 View(32, 0, 0, 320, 288, 10, 9), skin=skin)
+            for i in range(14):  # past the end of the body too
+                c = cos.skin_color(skin, i, 4, 777.0)
+                self.assertTrue(all(0 <= v <= 255 for v in c), (skin.id, i, c))
+
     def test_skin_colours_are_valid(self):
         for s in cos.SKINS:
             for i in range(12):
