@@ -18,13 +18,22 @@ from dataclasses import dataclass
 ROUND_BASE = 25          # finishing a single-player round (dying or winning)
 ROUND_PER_FRUIT = 10
 ROUND_CAP = 2_000        # most one round can give
-PR_REWARD = 1_000        # new personal record in a built-in speedrun category
-WR_REWARD = 100_000      # new world record in a built-in category
-WR_HOLD_REWARD = 10_000  # for every full 3 days you keep a world record
+PR_REWARD = 10_000       # new personal best in a built-in or weekly speedrun category...
+PR_MIN_GAIN = 0.05       # ...on your first finish, or at least 5% faster than your old best
+WR_REWARD = 100_000      # moving up to 1st place (2nd gets half, 3rd a quarter, ...: see placement_points)
+WR_HOLD_REWARD = 100_000  # for every full 3 days you keep a world record
 WR_HOLD_DAYS = 3
 MATCH_PLAYED = 50        # online versus, per match
 MATCH_PER_FRUIT = 10
 MATCH_WIN = 200
+
+
+def placement_points(place: int) -> int:
+    """Snake points for moving up to ``place`` on a speedrun leaderboard: 100,000 for 1st,
+    half as much for each place below (rounded to whole points)."""
+    if place < 1:
+        return 0
+    return int(WR_REWARD / 2 ** (place - 1) + 0.5)
 
 
 def round_points(fruit: int) -> int:
@@ -67,6 +76,54 @@ def next_rank(rp: int) -> tuple[str, int] | None:
         return None
     lo, name, _c = RANKS[index + 1]
     return name, lo
+
+
+# ---- the battle pass -----------------------------------------------------------------
+#
+# A new pass every week (Monday to Monday, UTC; see weeks.py). Everyone earns XP by
+# playing; buying the pass lets you claim the rewards for the levels you've reached
+# (a reward every 5 levels, with a Royal Crate at level 100). Levels don't stop at
+# 100, and any levels past 100 carry over to the next week's pass.
+
+PASS_PRICE = 10_000
+PASS_LEVELS = 100       # the reward track's length
+LEVEL_XP = 300          # XP per level
+XP_SPEEDRUN = 150       # finishing a speedrun (on top of the snake points it earns as XP)
+XP_WEEKLY = 300         # finishing one of the week's speedruns
+XP_PB = 300             # a new personal best
+# (rounds and versus matches give as much XP as the snake points they earn)
+
+
+def battle_pass(week: str) -> list[dict]:
+    """The week's reward track: [{"level", "kind" (points/crate/item), "amount"/"crate"/"item", "name"}].
+
+    Different every week (made from the week's name), the same for everyone."""
+    rng = random.Random(f"opensnake pass {week}")
+    shop_skins = {r: [f"skin:{s.id}" for s in SKINS if s.rarity == r and s.shop] for r in ("common", "uncommon", "rare")}
+    loot_skins = {r: [f"skin:{s.id}" for s in SKINS if s.rarity == r] for r in ("epic", "legendary")}
+    plan = [  # (level, reward)
+        (5, ("points", 1_000)), (10, ("crate", "bronze")), (15, ("item", rng.choice(shop_skins["common"]))),
+        (20, ("points", 2_500)), (25, ("crate", "silver")), (30, ("item", rng.choice(shop_skins["uncommon"]))),
+        (35, ("item", rng.choice([f"pack:{p.id}" for p in PACKS if p.price]))), (40, ("points", 5_000)),
+        (45, ("crate", "gold")), (50, ("item", rng.choice(shop_skins["rare"]))), (55, ("points", 7_500)),
+        (60, ("crate", "gold")), (65, ("item", rng.choice(loot_skins["epic"]))),
+        (70, ("item", rng.choice([f"pack:{p.id}" for p in PACKS if p.rarity == "epic"]))),
+        (75, ("crate", "diamond")), (80, ("points", 15_000)), (85, ("item", rng.choice(loot_skins["legendary"]))),
+        (90, ("crate", "diamond")), (95, ("points", 25_000)), (100, ("crate", "royal")),
+    ]
+    track = []
+    for level, (kind, value) in plan:
+        if kind == "points":
+            track.append({"level": level, "kind": kind, "amount": value, "name": f"{value:,} snake points"})
+        elif kind == "crate":
+            track.append({"level": level, "kind": kind, "crate": value, "name": CRATE_BY_ID[value].name})
+        else:
+            track.append({"level": level, "kind": kind, "item": value, "name": item_name(value)})
+    return track
+
+
+def pass_level(xp: int) -> int:
+    return max(0, xp) // LEVEL_XP
 
 
 # ---- the community leaderboard ------------------------------------------------------

@@ -358,13 +358,36 @@ you're logged in to:
 | For | Snake points |
 | --- | --- |
 | Finishing a round (dying or winning), or a speedrun | 25 + 10 per fruit eaten (up to 2,000) |
-| A new personal record in a built-in speedrun category | 1,000 |
-| A new world record in a built-in speedrun category | 100,000 (plus the 1,000 for the PR) |
-| Keeping that world record | 10,000 for every full 3 days you hold it |
+| Moving up a speedrun leaderboard | 1st place 100,000, 2nd 50,000, 3rd 25,000, 4th 12,500... (half for each place down) |
+| A personal best in a speedrun | 10,000 (your first finish, or at least 5% faster than your old best) |
+| Keeping a world record (built-in categories) | 100,000 for every full 3 days you hold it |
 | A versus match | 50, + 10 per fruit, + 200 for winning |
 
-Community categories (see below) keep their PRs and WRs but don't pay snake
-points. With mods on, rounds don't pay either.
+Speedrun rewards are for the built-in categories and this week's weekly ones.
+Place rewards pay whenever a run moves you up, so taking back a place you
+lost pays again. Community categories (see below) keep their PBs and WRs but
+don't pay snake points. With mods on, rounds don't pay either.
+
+**Battle pass.** The **Battle Pass** button on the menu opens this week's
+pass. A new pass starts every Monday (00:00 UTC) with different rewards:
+snake points, free loot boxes, skins and texture packs every 5 levels, up to
+a **Royal Crate** at level 100. Everyone earns XP by playing:
+
+| For | XP |
+| --- | --- |
+| A round or a versus match | the snake points it earns |
+| Finishing a speedrun | 150 (300 for a weekly speedrun) |
+| A personal best | +300 |
+
+A level takes 300 XP. Buy the pass (10,000 snake points) to claim the
+rewards for every level you've reached that week, including levels you
+reached before buying it. Levels don't stop at 100, and any levels past 100
+carry over to next week's pass (level 120 starts the next week at level 20).
+
+**Weekly speedruns.** Community's **Weekly** tab has 10 new speedrun
+categories every week, made fresh on Monday. They're ordinary speedruns with
+their own leaderboards, and they pay like the built-in ones while their week
+lasts.
 
 **Store.** The **Shop** sells Common, Uncommon and Rare skins, and four
 texture packs (Meadow, Desert Sand, Autumn and Ocean Breeze), outright.

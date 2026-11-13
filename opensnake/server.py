@@ -27,6 +27,10 @@ HTTP API (JSON):
     POST /api/categories      {def}              -> share a custom category
     POST /api/categories/rename  {id, name}      -> rename a category you made
     GET  /api/rankings                           -> the community leaderboard: scores out of 100
+    GET  /api/weekly                             -> this week's 10 speedrun categories, with their WRs
+    GET  /api/battlepass                         -> this week's pass: your level, XP and the reward track
+    POST /api/battlepass/buy                     -> buy this week's pass
+    POST /api/battlepass/claim  {level}          -> claim the reward at a level you've reached
     GET  /api/messages                           -> {chats: [{name, last, unread}], unread}
     GET  /api/messages/{name}?before=id          -> {messages: [...]} with a friend (marks them read)
     POST /api/messages        {to, body}         -> send a friend a message (also pushed live as "dm")
@@ -61,7 +65,9 @@ from .bots import BOT_NAMES, LEVEL_NAMES, LEVELS
 from .bots import choose as bot_choose
 from .game import DIRS, MAX_LATE_MOVES, Game, game_to_state
 from .modes import BUILTIN_MODE_IDS, VERSUS_MODES, VERSUS_SIZES, speed_ms
-from .speedrun import CATEGORY_BY_ID, CUSTOM_PREFIX, category_from_def, verify
+from .speedrun import (CATEGORY_BY_ID, CUSTOM_PREFIX, WEEKLY_PREFIX, category_from_def, find_category, verify,
+                       weekly_categories)
+from .weeks import previous_week, time_left, week_end, week_id
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_WEB = REPO / "web-support" / "build" / "opensnake" / "build" / "web"
@@ -134,6 +140,9 @@ class Database:
                 id INTEGER PRIMARY KEY, sender INTEGER NOT NULL, recipient INTEGER NOT NULL, body TEXT NOT NULL,
                 created TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS messages_pair ON messages(sender, recipient, id);
+            CREATE TABLE IF NOT EXISTS battlepass (
+                user_id INTEGER NOT NULL, week TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
+                owned INTEGER NOT NULL DEFAULT 0, claimed TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (user_id, week));
             CREATE TABLE IF NOT EXISTS pictures (
                 user_id INTEGER PRIMARY KEY, png BLOB NOT NULL, version TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS ledger (
@@ -343,18 +352,87 @@ class Database:
         self.grant(user_id, item)
         return self.add_points(user_id, -price, f"bought {item}")
 
-    def open_crate(self, user_id: int, crate_id: str, rng=random) -> dict:
+    def open_crate(self, user_id: int, crate_id: str, rng=random, free: bool = False) -> dict:
+        """Open a loot box (``free``: a battle pass reward, not bought)."""
         crate = cos.CRATE_BY_ID.get(crate_id)
         if not crate:
             raise ValueError("Unknown loot box.")
-        if self.points(user_id) < crate.price:
-            raise ValueError("Not enough snake points.")
-        self.add_points(user_id, -crate.price, f"opened {crate_id}")
-        item = cos.roll(crate, rng)
+        if not free:
+            if self.points(user_id) < crate.price:
+                raise ValueError("Not enough snake points.")
+            self.add_points(user_id, -crate.price, f"opened {crate_id}")
+        return self.give_item(user_id, cos.roll(crate, rng))
+
+    def give_item(self, user_id: int, item: str) -> dict:
+        """Grant an item, or points back if they already have it."""
         new = self.grant(user_id, item)
         refund = 0 if new else cos.DUPLICATE_REFUND[cos.item_rarity(item)]
         balance = self.add_points(user_id, refund, f"duplicate {item}") if refund else self.points(user_id)
         return {"item": item, "new": new, "refund": refund, "points": balance}
+
+    # -- the battle pass
+
+    def pass_row(self, user_id: int, week: str | None = None) -> sqlite3.Row:
+        """A player's pass for a week, started (with any levels past 100 from last week) if new."""
+        week = week or week_id()
+        row = self.db.execute("SELECT * FROM battlepass WHERE user_id = ? AND week = ?", (user_id, week)).fetchone()
+        if row:
+            return row
+        last = self.db.execute("SELECT xp FROM battlepass WHERE user_id = ? AND week = ?",
+                               (user_id, previous_week(week))).fetchone()
+        carry = max(0, last["xp"] - cos.PASS_LEVELS * cos.LEVEL_XP) if last else 0
+        self.db.execute("INSERT OR IGNORE INTO battlepass (user_id, week, xp) VALUES (?, ?, ?)", (user_id, week, carry))
+        self.db.commit()
+        return self.pass_row(user_id, week)
+
+    def add_xp(self, user_id: int, xp: int) -> None:
+        if xp > 0:
+            week = self.pass_row(user_id)["week"]
+            self.db.execute("UPDATE battlepass SET xp = xp + ? WHERE user_id = ? AND week = ?", (xp, user_id, week))
+            self.db.commit()
+
+    def buy_pass(self, user_id: int) -> int:
+        row = self.pass_row(user_id)
+        if row["owned"]:
+            raise ValueError("You already have this week's pass.")
+        if self.points(user_id) < cos.PASS_PRICE:
+            raise ValueError("Not enough snake points.")
+        self.db.execute("UPDATE battlepass SET owned = 1 WHERE user_id = ? AND week = ?", (user_id, row["week"]))
+        return self.add_points(user_id, -cos.PASS_PRICE, f"battle pass {row['week']}")
+
+    def claim_pass(self, user_id: int, level: int, rng=random) -> dict:
+        row = self.pass_row(user_id)
+        week = row["week"]
+        tier = next((t for t in cos.battle_pass(week) if t["level"] == level), None)
+        claimed = json.loads(row["claimed"])
+        if not tier:
+            raise ValueError("There's no reward at that level.")
+        if not row["owned"]:
+            raise ValueError("Buy this week's pass to claim its rewards.")
+        if cos.pass_level(row["xp"]) < level:
+            raise ValueError(f"Reach level {level} first.")
+        if level in claimed:
+            raise ValueError("You've already claimed that.")
+        claimed.append(level)
+        self.db.execute("UPDATE battlepass SET claimed = ? WHERE user_id = ? AND week = ?",
+                        (json.dumps(claimed), user_id, week))
+        self.db.commit()
+        if tier["kind"] == "points":
+            return {"tier": tier, "points": self.add_points(user_id, tier["amount"], f"battle pass level {level}")}
+        if tier["kind"] == "crate":
+            return {"tier": tier, **self.open_crate(user_id, tier["crate"], rng, free=True)}
+        return {"tier": tier, **self.give_item(user_id, tier["item"])}
+
+    def pass_info(self, user_id: int) -> dict:
+        row = self.pass_row(user_id)
+        week, xp = row["week"], row["xp"]
+        level = cos.pass_level(xp)
+        claimed = set(json.loads(row["claimed"]))
+        return {"week": week, "ends": week_end(week).strftime("%Y-%m-%dT%H:%M:%SZ"), "left": time_left(week),
+                "owned": bool(row["owned"]), "price": cos.PASS_PRICE, "xp": xp, "level": level,
+                "level_xp": cos.LEVEL_XP, "into_level": xp - level * cos.LEVEL_XP, "max": cos.PASS_LEVELS,
+                "tiers": [{**t, "claimed": t["level"] in claimed, "reached": level >= t["level"]}
+                          for t in cos.battle_pass(week)]}
 
     # -- friends
 
@@ -727,6 +805,7 @@ class Room:
             points = cos.MATCH_PLAYED + cos.MATCH_PER_FRUIT * g.snakes[p.snake].score + \
                 (cos.MATCH_WIN if result == "win" else 0)
             info = self.server.db.record_match(p.user_id, result, ranked, points)
+            self.server.db.add_xp(p.user_id, points)
             p.rank = info["rank"]
             await self.send(p, {"t": "reward", "result": result, "ranked": ranked, **info})
 
@@ -811,6 +890,10 @@ class Server:
         r.add_post("/api/categories", self.share_category)
         r.add_post("/api/categories/rename", self.rename_category)
         r.add_get("/api/rankings", self.rankings)
+        r.add_get("/api/weekly", self.weekly)
+        r.add_get("/api/battlepass", self.battlepass)
+        r.add_post("/api/battlepass/buy", self.buy_pass)
+        r.add_post("/api/battlepass/claim", self.claim_pass)
         r.add_get("/api/messages", self.chats)
         r.add_get("/api/messages/{name}", self.conversation)
         r.add_post("/api/messages", self.send_message)
@@ -1002,6 +1085,7 @@ class Server:
             return web.json_response({"earned": 0, "points": self.db.points(user["id"])})
         self.last_round[user["id"]] = now
         earned = cos.round_points(fruit)
+        self.db.add_xp(user["id"], earned)
         return web.json_response({"earned": earned, "points": self.db.add_points(user["id"], earned, "round")})
 
     # -- community categories
@@ -1093,7 +1177,11 @@ class Server:
         user = self.account(request, "Log in to submit runs.")
         run = await self.body(request)
         category = str(run.get("category", ""))
-        if category not in CATEGORY_BY_ID and not category.startswith(CUSTOM_PREFIX):
+        if not category.startswith((CUSTOM_PREFIX, WEEKLY_PREFIX)) and category not in CATEGORY_BY_ID:
+            return self.error("Unknown category.")
+        try:
+            weekly = find_category(category, run).weekly if category.startswith(WEEKLY_PREFIX) else ""
+        except (KeyError, ValueError):
             return self.error("Unknown category.")
         # Only built-in modes count online: mod modes (or anything else) can't set records.
         definition = run.get("category_def") if isinstance(run.get("category_def"), dict) else {}
@@ -1105,27 +1193,74 @@ class Server:
         if not ok:
             return web.json_response({"valid": False, "message": message})
         time_ms = int(run["time_ms"])
-        before = self.db.best_for(user["id"], category)
-        wr_before = self.db.records().get(category)
+        name = user["name"].lower()
+
+        def place() -> int | None:
+            board = self.db.leaderboard(category, 1000)
+            return next((i + 1 for i, e in enumerate(board) if e["player"].lower() == name), None)
+        before, rank_before = self.db.best_for(user["id"], category), place()
         self.db.add_run(user["id"], category, time_ms, run)
-        board = self.db.leaderboard(category, 1000)
-        rank = next((i + 1 for i, e in enumerate(board) if e["player"].lower() == user["name"].lower()), None)
+        rank = place()
         pb = before is None or time_ms < before
-        wr = wr_before is None or time_ms < wr_before["time_ms"]
+        wr = rank == 1 and rank_before != 1
         earned = 0
-        if category in CATEGORY_BY_ID:  # community categories keep their records but pay nothing
-            earned = (cos.PR_REWARD if pb else 0) + (cos.WR_REWARD if wr else 0)
+        # Built-in categories, and this week's weekly ones, pay: moving up the leaderboard
+        # (100,000 for 1st, half that for 2nd...) and a real personal best. Community
+        # categories keep their records but pay nothing (anyone could make one to farm).
+        if category in CATEGORY_BY_ID or (weekly and weekly == week_id()):
+            if rank and (rank_before is None or rank < rank_before):
+                earned += cos.placement_points(rank)
+            if before is None or time_ms <= before * (1 - cos.PR_MIN_GAIN):
+                earned += cos.PR_REWARD
             if earned:
-                self.db.add_points(user["id"], earned, f"{'WR' if wr else 'PR'} in {category}")
-            self.db.settle_wr_holds()
-        elif definition:
+                self.db.add_points(user["id"], earned, f"place {rank} in {category}")
+            self.db.add_xp(user["id"], (cos.XP_WEEKLY if weekly else cos.XP_SPEEDRUN) + (cos.XP_PB if pb else 0))
+            if category in CATEGORY_BY_ID:
+                self.db.settle_wr_holds()
+        elif definition and not weekly:
             try:  # the first person to submit a run in a custom category is its creator
                 self.db.share_category(definition, user["id"])
             except (KeyError, TypeError, ValueError):
                 pass
         return web.json_response({
-            "valid": True, "message": message, "time_ms": time_ms, "rank": rank, "pb": pb, "wr": wr,
-            "earned": earned, "points": self.db.points(user["id"])})
+            "valid": True, "message": message, "time_ms": time_ms, "rank": rank, "rank_before": rank_before,
+            "pb": pb, "wr": wr, "earned": earned, "points": self.db.points(user["id"])})
+
+    # -- weekly speedruns and the battle pass
+    async def weekly(self, request: web.Request) -> web.Response:
+        week = week_id()
+        records = self.db.records()
+        cats = []
+        for c in weekly_categories(week):
+            players = self.db.db.execute("SELECT COUNT(DISTINCT user_id) FROM runs WHERE category = ?",
+                                         (c.id,)).fetchone()[0]
+            cats.append({"id": c.id, "name": c.name, "desc": c.desc, "players": players, "wr": records.get(c.id)})
+        return web.json_response({"week": week, "left": time_left(week), "categories": cats})
+
+    async def battlepass(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to see the battle pass.")
+        return web.json_response(self.db.pass_info(user["id"]))
+
+    async def buy_pass(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to buy the battle pass.")
+        try:
+            balance = self.db.buy_pass(user["id"])
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response({**self.db.pass_info(user["id"]), "points": balance})
+
+    async def claim_pass(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to claim rewards.")
+        try:
+            level = int((await self.body(request)).get("level", 0))
+        except (TypeError, ValueError):
+            return self.error("Expected a level.")
+        try:
+            result = self.db.claim_pass(user["id"], level)
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response({**result, "pass": self.db.pass_info(user["id"]),
+                                  "points": self.db.points(user["id"])})
 
     # -- versus multiplayer
     async def matches(self, request: web.Request) -> web.Response:

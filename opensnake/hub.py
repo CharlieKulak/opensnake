@@ -26,12 +26,14 @@ POINTS = (214, 150, 0)
 # menu's buttons; Community and Profile from the circles in its top corners.
 SCREENS = {
     "online": [("play", "Play")],
-    "community": [("community", "Categories"), ("ranking", "Leaderboard")],
+    "community": [("community", "Categories"), ("weekly", "Weekly"), ("ranking", "Leaderboard")],
     "profile": [("profile", "Profile"), ("friends", "Friends"), ("messages", "Messages")],
     "store": [("store", "Store")],
+    "battlepass": [("battlepass", "Battle Pass")],
 }
 SCREEN_OF = {tab: screen for screen, tabs in SCREENS.items() for tab, _label in tabs}
-TITLES = {"online": "Online", "community": "Community", "profile": "Profile", "store": "Store"}
+TITLES = {"online": "Online", "community": "Community", "profile": "Profile", "store": "Store",
+          "battlepass": "Battle Pass"}
 STORE_TABS = [("shop", "Shop"), ("crates", "Loot boxes"), ("collection", "Collection")]
 
 REEL_CARDS = 48       # cards on a loot box reel
@@ -63,6 +65,9 @@ class Hub:
         self.picker: ImagePicker | None = None
         self.renaming: str | None = None   # id of the community category being renamed
         self.ranking: dict | None = None    # the community leaderboard, once loaded
+        self.weekly: dict | None = None     # this week's speedruns, once loaded
+        self.pass_info: dict | None = None  # this week's battle pass, once loaded
+        self.pass_scroll: int | None = None  # first reward shown (None: start at your level)
         # messages
         self.chats: list[dict] = []        # conversations, newest first
         self.unread = 0
@@ -103,6 +108,12 @@ class Hub:
             self.load_community()
         elif tab == "ranking":
             self.load_ranking()
+        elif tab == "weekly":
+            self.load_weekly()
+        elif tab == "battlepass":
+            self.pass_scroll = None
+            self.on.refresh_me()
+            self.load_pass()
         elif tab == "messages":
             self.load_friends()
             self.load_chats()
@@ -130,6 +141,72 @@ class Hub:
             if r.ok and q == self.users_query:
                 self.users = r.data.get("users", [])
         self.on.request("GET", "/api/users?" + urllib.parse.urlencode({"q": query}), then=done, auth=False)
+
+    def load_weekly(self) -> None:
+        def done(r):
+            if r.ok:
+                self.weekly = r.data
+            else:
+                self.on.say(r.message, BAD)
+        self.on.request("GET", "/api/weekly", then=done, auth=False)
+
+    def play_weekly(self, category_id: str) -> None:
+        from .speedrun import weekly_category
+        try:
+            cat = weekly_category(category_id)
+        except KeyError:
+            self.on.say("That weekly speedrun isn't in this version of the game.", BAD)
+            return
+        self.app.start_run(cat, "weekly")
+
+    # -- the battle pass
+
+    def load_pass(self) -> None:
+        def done(r):
+            if r.ok:
+                self.pass_info = r.data
+            elif r.status != 401:
+                self.on.say(r.message, BAD)
+        self.on.request("GET", "/api/battlepass", then=done)
+
+    def buy_pass(self) -> None:
+        def done(r):
+            if r.ok:
+                self.pass_info = r.data
+                if self.on.me:
+                    self.on.me["points"] = r.data.get("points", self.on.me.get("points", 0))
+                self.on.toast("Battle pass unlocked!", GOOD)
+                self.app.sfx.play("win")
+            else:
+                self.on.say(r.message, BAD)
+        self.on.request("POST", "/api/battlepass/buy", {}, then=done)
+
+    def claim(self, level: int) -> None:
+        if self.busy or self.opening:
+            return
+        self.busy = True
+
+        def done(r):
+            self.busy = False
+            if not r.ok:
+                self.on.say(r.message, BAD)
+                return
+            self.pass_info = r.data.get("pass", self.pass_info)
+            if self.on.me:
+                self.on.me["points"] = r.data.get("points", self.on.me.get("points", 0))
+            tier = r.data["tier"]
+            if tier["kind"] == "crate":  # a free loot box: open it like a bought one
+                self.start_reel(cos.CRATE_BY_ID[tier["crate"]], r.data)
+            elif tier["kind"] == "points":
+                self.on.toast(f"+{cos.format_points(tier['amount'])} snake points", GOOD)
+                self.app.sfx.play("eat")
+            else:
+                got = cos.item_name(r.data["item"])
+                self.on.toast(f"Got {got}!" if r.data.get("new") else
+                              f"Already had {got}: +{cos.format_points(r.data.get('refund', 0))} snake points", GOOD)
+                self.app.sfx.play("win")
+                self.on.refresh_me()
+        self.on.request("POST", "/api/battlepass/claim", {"level": level}, then=done)
 
     def load_ranking(self) -> None:
         def done(r):
@@ -392,12 +469,17 @@ class Hub:
             if self.on.me:
                 self.on.me["points"] = r.data.get("points", self.on.me.get("points", 0))
             rng = random.Random()
-            reel = [cos.roll(crate, rng) for _ in range(REEL_CARDS)]
-            reel[REEL_WIN] = r.data["item"]
-            self.opening = {"crate": crate, "reel": reel, "result": r.data, "start": pygame.time.get_ticks(),
-                            "land": rng.uniform(-0.38, 0.38), "last_card": -1, "done": False}
+            self.start_reel(crate, r.data)
         self.on.say("")
         self.on.request("POST", "/api/store/open", {"crate": crate.id}, then=done)
+
+    def start_reel(self, crate: cos.Crate, result: dict) -> None:
+        """Spin a loot box's reel onto ``result["item"]`` (what the server gave)."""
+        rng = random.Random()
+        reel = [cos.roll(crate, rng) for _ in range(REEL_CARDS)]
+        reel[REEL_WIN] = result["item"]
+        self.opening = {"crate": crate, "reel": reel, "result": result, "start": pygame.time.get_ticks(),
+                        "land": rng.uniform(-0.38, 0.38), "last_card": -1, "done": False}
 
     def finish_opening(self) -> None:
         self.opening = None
@@ -455,6 +537,9 @@ class Hub:
     # ---- input ------------------------------------------------------------------------------
 
     def wheel(self, dy: int) -> None:
+        if self.on.tab == "battlepass" and self.pass_scroll is not None:
+            self.pass_scroll = max(0, self.pass_scroll - dy)
+            return
         if self.on.tab == "messages" and self.chat_with:
             self.chat_scroll = max(0, self.chat_scroll + dy * 40)
             return
@@ -477,6 +562,9 @@ class Hub:
             return True
         if ev.key in (pygame.K_UP, pygame.K_DOWN):
             self.wheel(1 if ev.key == pygame.K_UP else -1)
+            return True
+        if self.on.tab == "battlepass" and ev.key in (pygame.K_LEFT, pygame.K_RIGHT):
+            self.wheel(1 if ev.key == pygame.K_LEFT else -1)
             return True
         return False
 
@@ -617,7 +705,7 @@ class Hub:
 
     def draw(self, p, top: int, bottom: int) -> None:
         tab = self.on.tab
-        if tab not in ("community", "ranking") and not self.on.logged_in:
+        if tab not in ("community", "ranking", "weekly") and not self.on.logged_in:
             what = {"store": "the store", "friends": "friends", "messages": "messages"}.get(tab, "your profile")
             mid = (top + bottom) // 2
             self.text(f"Log in to use {what}.", p.h * 0.034, INK, midbottom=(p.centerx, mid - 10))
@@ -637,6 +725,165 @@ class Hub:
             self.draw_messages(p, top, bottom)
         elif tab == "ranking":
             self.draw_ranking(p, top, bottom)
+        elif tab == "weekly":
+            self.draw_weekly(p, top, bottom)
+        elif tab == "battlepass":
+            self.draw_pass(p, top, bottom)
+
+    # ---- Weekly speedruns --------------------------------------------------------------------
+
+    def draw_weekly(self, p, top, bottom) -> None:
+        ph = p.h
+        x, w = p.x + 40, p.w - 80
+        data = self.weekly
+        if data is None:
+            self.text("Loading...", ph * 0.03, MUTED, center=(p.centerx, (top + bottom) // 2))
+            return
+        self.text(f"This week's speedruns   ·   new ones in {data['left']}", ph * 0.03, INK, topleft=(x, top))
+        self.text(f"They pay like the built-in categories: {cos.format_points(cos.WR_REWARD)} for 1st place "
+                  f"(half for 2nd, and so on) and {cos.format_points(cos.PR_REWARD)} for a personal best.",
+                  ph * 0.022, MUTED, topleft=(x, top + ph * 0.045))
+        y = top + ph * 0.085
+        rh = max(52, int(ph * 0.085))
+        cats = data.get("categories", [])
+        fits = max(1, int((bottom - y) // (rh + 6)))
+        self.scroll = min(self.scroll, max(0, len(cats) - fits))
+        for c in cats[self.scroll:self.scroll + fits]:
+            r = pygame.Rect(x, y, w, rh)
+            pygame.draw.rect(self.app.screen, CARD, r, border_radius=8)
+            self.text(c["name"], rh * 0.3, INK, topleft=(r.x + 14, r.y + rh * 0.12))
+            wr = c.get("wr")
+            pb = self.app.store.pb(c["id"])
+            sub = (c["desc"] + (f"   WR {format_time(wr['time_ms'])} by {wr['player']}" if wr else "   No WR yet")
+                   + (f"   ·   your PB {format_time(pb['time_ms'])}" if pb else "")
+                   + f"   ·   {c['players']} player{'s' if c['players'] != 1 else ''}")
+            font = self.app.renderer.font(max(10, int(rh * 0.22)), False)
+            while len(sub) > 10 and font.size(sub)[0] > w * 0.82:
+                sub = sub[:-4] + "..."
+            self.text(sub, rh * 0.22, MUTED, bottomleft=(r.x + 14, r.bottom - rh * 0.14))
+            bw = int(w * 0.11)
+            self.button(pygame.Rect(r.right - bw - 10, r.y + rh * 0.2, bw, rh * 0.6), "Play",
+                        lambda i=c["id"]: self.play_weekly(i), True, not self.on.mods_on)
+            y += rh + 6
+        if len(cats) > fits:
+            self.text(f"{self.scroll + 1}-{self.scroll + fits} of {len(cats)} (scroll for more)", ph * 0.022,
+                      MUTED, topleft=(x, y))
+
+    # ---- Battle pass -----------------------------------------------------------------------------
+
+    def reward_art(self, rect: pygame.Rect, tier: dict, now: float) -> None:
+        scr = self.app.screen
+        if tier["kind"] == "item":
+            self.item_art(rect, tier["item"], now)
+        elif tier["kind"] == "crate":
+            crate = cos.CRATE_BY_ID[tier["crate"]]
+            bw, bh = int(rect.w * 0.6), int(rect.h * 0.6)
+            box = pygame.Rect(0, 0, bw, bh)
+            box.midbottom = (rect.centerx, rect.bottom - 2)
+            dark = tuple(int(c * 0.7) for c in crate.color)
+            pygame.draw.rect(scr, crate.color, box, border_radius=5)
+            lid = pygame.Rect(box.x - 3, box.y - bh * 0.25, bw + 6, bh * 0.3)
+            pygame.draw.rect(scr, dark, lid, border_radius=4)
+            pygame.draw.rect(scr, dark, (box.centerx - bw * 0.07, lid.y, bw * 0.14, box.bottom - lid.y))
+        else:
+            g = min(rect.w, rect.h) * 0.32  # a big gem
+            c = rect.center
+            pts = [(c[0] - g, c[1] - g * 0.35), (c[0] - g * 0.5, c[1] - g * 0.8), (c[0] + g * 0.5, c[1] - g * 0.8),
+                   (c[0] + g, c[1] - g * 0.35), (c[0], c[1] + g)]
+            pygame.draw.polygon(scr, POINTS, pts)
+            pygame.draw.lines(scr, WHITE, True, pts, 2)
+
+    def draw_pass(self, p, top, bottom) -> None:
+        ph = p.h
+        x, w = p.x + 40, p.w - 80
+        scr = self.app.screen
+        info = self.pass_info
+        now = pygame.time.get_ticks()
+        if info is None:
+            self.text("Loading...", ph * 0.03, MUTED, center=(p.centerx, (top + bottom) // 2))
+            return
+        if self.opening:  # a free loot box from the pass
+            self.draw_opening(pygame.Rect(x, top, w, bottom - top), now)
+            return
+        level = info["level"]
+        # level and XP
+        self.text(f"Level {level}", ph * 0.06, INK, topleft=(x, top))
+        bar = pygame.Rect(x, top + ph * 0.075, int(w * 0.5), 14)
+        pygame.draw.rect(scr, (230, 233, 226), bar, border_radius=7)
+        frac = info["into_level"] / max(1, info["level_xp"])
+        pygame.draw.rect(scr, ACCENT, (bar.x, bar.y, max(14, int(bar.w * frac)), bar.h), border_radius=7)
+        self.text(f"{info['into_level']} / {info['level_xp']} XP to level {level + 1}", ph * 0.022, MUTED,
+                  topleft=(x, bar.bottom + 6))
+        self.text(f"Week {info['week']}   ·   ends in {info['left']}   ·   levels past {info['max']} carry over "
+                  "to next week", ph * 0.022, MUTED, topleft=(x, bar.bottom + 6 + ph * 0.03))
+        # buy / owned
+        points = (self.on.me or {}).get("points", 0)
+        bw, bh = int(w * 0.3), max(36, int(ph * 0.06))
+        b = pygame.Rect(x + w - bw, top + 4, bw, bh)
+        if info["owned"]:
+            ready = [t for t in info["tiers"] if t["reached"] and not t["claimed"]]
+            self.button(b, f"Claim level {ready[0]['level']}" if ready else "Pass owned",
+                        (lambda lv=ready[0]["level"]: self.claim(lv)) if ready else (lambda: None),
+                        bool(ready), bool(ready) and not self.busy)
+            note = f"{len(ready)} reward{'s' if len(ready) != 1 else ''} ready to claim" if ready else \
+                "Keep playing to unlock more"
+        else:
+            self.button(b, f"Buy pass  {cos.format_points(info['price'])}", self.buy_pass, True,
+                        points >= info["price"])
+            note = "Buy it to claim the rewards for every level you reach this week"
+        self.text(note, ph * 0.022, MUTED, midtop=(b.centerx, b.bottom + 6))
+        self.points_badge(points, ph * 0.026, topright=(x + w, b.bottom + 6 + ph * 0.035))
+
+        # the reward track
+        y = top + ph * 0.2
+        tiers = info["tiers"]
+        cols = 6
+        gap = 10
+        cw = (w - gap * (cols - 1)) // cols
+        ch = min(int(cw * 1.45), int(bottom - y - ph * 0.08))
+        if self.pass_scroll is None:  # start with the next rewards in view
+            nxt = next((i for i, t in enumerate(tiers) if not t["reached"]), len(tiers))
+            self.pass_scroll = max(0, min(nxt - 2, len(tiers) - cols))
+        self.pass_scroll = max(0, min(self.pass_scroll, len(tiers) - cols))
+        for k, t in enumerate(tiers[self.pass_scroll:self.pass_scroll + cols]):
+            r = pygame.Rect(x + k * (cw + gap), y, cw, ch)
+            rarity = cos.item_rarity(t["item"]) if t["kind"] == "item" else (
+                "mythic" if t.get("crate") == "royal" else "legendary" if t["kind"] == "crate" else "common")
+            edge = cos.RARITY_COLORS[rarity] if t["reached"] else (210, 214, 206)
+            pygame.draw.rect(scr, CARD if t["reached"] else (236, 238, 233), r, border_radius=10)
+            pygame.draw.rect(scr, edge, r, 3, border_radius=10)
+            self.text(f"Lv {t['level']}", ch * 0.09, INK if t["reached"] else MUTED, midtop=(r.centerx, r.y + 6))
+            art = pygame.Rect(r.x + 10, r.y + ch * 0.17, r.w - 20, int(ch * 0.36))
+            self.reward_art(art, t, now)
+            name = t["name"]
+            size = ch * 0.075
+            while size > 9 and self.app.renderer.font(int(size)).size(name)[0] > r.w - 10:
+                size -= 1
+            self.text(name, size, INK, midtop=(r.centerx, art.bottom + 8))
+            btn = pygame.Rect(r.x + 8, r.bottom - int(ch * 0.17) - 8, r.w - 16, int(ch * 0.17))
+            if t["claimed"]:
+                self.button(btn, "Claimed", lambda: None, False, False)
+            elif not t["reached"]:
+                self.text(f"{(t['level'] - level)} levels to go", ch * 0.06, MUTED, center=btn.center)
+            elif info["owned"]:
+                self.button(btn, "Claim", lambda lv=t["level"]: self.claim(lv), True, not self.busy)
+            else:
+                self.text("Buy the pass", ch * 0.065, MUTED, center=btn.center)
+        # progress along the track, and where you are
+        line_y = y + ch + 14
+        pygame.draw.line(scr, (220, 224, 216), (x, line_y), (x + w, line_y), 4)
+        shown = tiers[self.pass_scroll:self.pass_scroll + cols]
+        reached = [k for k, t in enumerate(shown) if t["reached"]]
+        if reached:
+            end = x + reached[-1] * (cw + gap) + cw // 2
+            pygame.draw.line(scr, ACCENT, (x, line_y), (end, line_y), 4)
+        line = self.text(f"Rewards {self.pass_scroll + 1}-{self.pass_scroll + len(shown)} of {len(tiers)}   ·   "
+                         "Wheel or Left/Right: see more", ph * 0.024, INK, midtop=(p.centerx, line_y + 12))
+        self.text(f"XP: rounds and versus matches give as much XP as snake points, a speedrun {cos.XP_SPEEDRUN}, "
+                  f"a weekly speedrun {cos.XP_WEEKLY}, a personal best +{cos.XP_PB}. {cos.LEVEL_XP} XP a level.",
+                  ph * 0.022, MUTED, midtop=(p.centerx, line.bottom + 8))
+
+
 
     # ---- Community leaderboard -------------------------------------------------------------
 

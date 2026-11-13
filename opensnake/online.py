@@ -294,6 +294,8 @@ class Online:
                 report("The server couldn't verify this run.", BAD)
             elif r.data.get("wr"):
                 report(f"New world record on {self.site}!{bonus}", GOOD)
+            elif r.data.get("rank") and (r.data.get("rank_before") is None or r.data["rank"] < r.data["rank_before"]):
+                report(f"Up to #{r.data['rank']} on {self.site}{bonus}", GOOD)
             elif r.data.get("pb"):
                 report(f"Submitted: #{r.data.get('rank')} on {self.site}{bonus}", GOOD)
             else:
@@ -599,7 +601,8 @@ class Online:
             if self.focus == "match_name" and f.value != before:
                 self.set_details(name=f.value)
             return
-        if state in ("online", "community", "profile", "store") and self.tab != "play" and self.hub.key(ev):
+        if state in ("online", "community", "profile", "store", "battlepass") and self.tab != "play" and \
+                self.hub.key(ev):
             return
         tabs = self.hub.tabs()
         if len(tabs) > 1 and pygame.K_1 <= ev.key < pygame.K_1 + len(tabs):
@@ -824,8 +827,10 @@ class Online:
                 "store": "Wheel / Up / Down: scroll   Esc: back",
                 "friends": "Click a player to see their profile   1-3: tabs   Esc: back",
                 "messages": "Enter: send   Wheel: older messages   1-3: tabs   Esc: close chat",
-                "community": "Type to search   Wheel: scroll   1-2: tabs   Esc: back",
-                "ranking": "Wheel: scroll   1-2: tabs   Esc: back"}.get(self.tab, "1-3: tabs   Esc: back")
+                "community": "Type to search   Wheel: scroll   1-3: tabs   Esc: back",
+                "weekly": "Wheel: scroll   1-3: tabs   Esc: back",
+                "ranking": "Wheel: scroll   1-3: tabs   Esc: back",
+                "battlepass": "Wheel or Left/Right: rewards   Esc: back"}.get(self.tab, "1-3: tabs   Esc: back")
         self._text(hint, ph * 0.022, MUTED, midbottom=(p.centerx, p.bottom - 8))
         self.focus = focus
 

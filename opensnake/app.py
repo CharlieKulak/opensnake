@@ -119,7 +119,7 @@ OPTIONS = [
 ]
 
 # Screens drawn and controlled by the Online object.
-ACCOUNT_SCREENS = ("online", "community", "profile", "store", "lobby", "matches")
+ACCOUNT_SCREENS = ("online", "community", "profile", "store", "battlepass", "lobby", "matches")
 
 WHITE = (255, 255, 255)
 PANEL = (255, 255, 255)
@@ -395,6 +395,8 @@ class App:
         """Back to wherever the run was started from."""
         if self.attempt_origin == "menu":
             self.open_menu()
+        elif self.attempt_origin == "weekly":
+            self.online.hub.open_tab("weekly")
         else:
             self.open_speedrun()
 
@@ -593,7 +595,7 @@ class App:
             self.sr_wheeled = True  # scroll the list; the selection follows (not the other way round)
         elif ev.type == pygame.MOUSEWHEEL and self.state == "matches":
             self.online.scroll(-ev.y)
-        elif ev.type == pygame.MOUSEWHEEL and self.state in ("online", "community", "profile", "store"):
+        elif ev.type == pygame.MOUSEWHEEL and self.state in ("online", "community", "profile", "store", "battlepass"):
             self.online.hub.wheel(ev.y)
         elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
             self.click(ev.pos)
@@ -844,7 +846,7 @@ class App:
             self.open_addons()
         elif w.get("id") == "online":
             self.open_online()
-        elif w.get("id") in ("store", "community"):
+        elif w.get("id") in ("store", "community", "battlepass"):
             self.online.hub.open_tab(w["id"])
         elif w.get("id") == "profile":
             self.online.hub.open_tab("profile")
@@ -891,7 +893,7 @@ class App:
         bh = max(36, int(ph * 0.065))
         hint_h = int(ph * 0.024) + 16  # shortcut hint along the panel's bottom edge
         by = min(y + slider_h + 10, panel.bottom - hint_h - bh)
-        buttons = [("store", "Store"), ("speedrun", "Speedrun"), ("online", "Online"),
+        buttons = [("store", "Store"), ("battlepass", "Battle Pass"), ("speedrun", "Speedrun"), ("online", "Online"),
                    ("addons", "Packs & Mods"), ("play", "Play")] + \
             ([] if WEB else [("quit", "Quit")])
         bw = min(round(190 * grow), (pw - 40) // len(buttons) - 16)
@@ -979,7 +981,8 @@ class App:
                 primary = w["id"] == "play"
                 bg = ACCENT if primary else (242, 244, 239)
                 pygame.draw.rect(scr, bg, r, border_radius=r.h // 2)
-                text = {"store": "Store", "speedrun": "Speedrun", "addons": "Packs & Mods", "online": "Online",
+                text = {"store": "Store", "battlepass": "Battle Pass", "speedrun": "Speedrun",
+                        "addons": "Packs & Mods", "online": "Online",
                         "play": "Play", "quit": "Quit"}[w["id"]]
                 t = R.font(int(r.h * 0.55)).render(text, True, WHITE if primary else INK)
                 if t.get_width() > r.w - 16:  # long label on a narrow button
@@ -993,6 +996,8 @@ class App:
             desc = MODE_DESCS[focused["id"]]
         elif focused.get("id") == "store":
             desc = "Skins, texture packs and loot boxes, for snake points."
+        elif focused.get("id") == "battlepass":
+            desc = "This week's battle pass: level up by playing and claim loot boxes, skins and packs."
         elif focused.get("id") == "community":
             desc = "Custom speedrun categories players have made and shared, with their records."
         elif focused.get("id") == "profile":
@@ -1818,7 +1823,7 @@ class App:
             self.draw_speedrun()
         elif self.state == "addons":
             self.draw_addons()
-        elif self.state in ("online", "community", "profile", "store"):
+        elif self.state in ("online", "community", "profile", "store", "battlepass"):
             self.online.draw_online()
         elif self.state == "lobby":
             self.online.draw_lobby()

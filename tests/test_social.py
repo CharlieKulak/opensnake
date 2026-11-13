@@ -72,9 +72,9 @@ class PointsTests(ServerTestCase):
         cat = CATEGORY_BY_ID["sprint10"]
         slow = bot_run(cat, 4, random.Random(3))
         res = (await self.post("/api/runs", slow.to_json(), a))[1]
-        self.assertEqual(res["earned"], cos.PR_REWARD + cos.WR_REWARD)  # first run: a PR and the WR
-        res = (await self.post("/api/runs", slow.to_json(), b))[1]   # same time: a PR, not a WR
-        self.assertEqual(res["earned"], cos.PR_REWARD)
+        self.assertEqual(res["earned"], cos.PR_REWARD + cos.WR_REWARD)  # first run: a PB and 1st place
+        res = (await self.post("/api/runs", slow.to_json(), b))[1]   # same time: a PB, and 2nd place
+        self.assertEqual(res["earned"], cos.PR_REWARD + cos.WR_REWARD // 2)
         res = (await self.post("/api/runs", slow.to_json(), b))[1]   # no improvement
         self.assertEqual(res["earned"], 0)
 
@@ -400,7 +400,7 @@ class RankingTests(ServerTestCase):
         self.assertEqual(set(by), {"alice", "bobby"})
         alice, bobby = by["alice"], by["bobby"]
         self.assertEqual((alice["wrs"], alice["prs"], alice["earned"]),
-                         (1, 1, cos.PR_REWARD + cos.WR_REWARD))
+                         (1, 1, cos.PR_REWARD + cos.WR_REWARD))  # (a PB and 1st place)
         self.assertEqual((bobby["wrs"], bobby["prs"], bobby["earned"], bobby["skins"]), (0, 0, 50_000, 2))
         self.assertEqual([p["name"] for p in data["players"]],
                          sorted(by, key=lambda n: -by[n]["score"]))
@@ -408,3 +408,149 @@ class RankingTests(ServerTestCase):
         self.assertEqual(data["me"]["name"], "bobby")
         self.assertAlmostEqual(alice["score"], sum(alice["parts"].values()), places=1)
         self.assertEqual(sum(pt["most"] for pt in data["parts"]), 100)
+
+
+
+def finished_runs(category, count, seeds=range(1, 80)):
+    """Bot runs of a category with different finishing times, slowest first."""
+    by_time = {}
+    for seed in seeds:
+        run = bot_run(category, seed, random.Random(seed))
+        if run.finished:
+            by_time.setdefault(round(run.elapsed), run)
+        if len(by_time) >= count:
+            break
+    return [by_time[t] for t in sorted(by_time, reverse=True)]
+
+
+class PlacementTests(ServerTestCase):
+    async def test_moving_up_pays_by_place_and_pbs_need_5_percent(self):
+        self.assertEqual([cos.placement_points(i) for i in range(1, 8)],
+                         [100_000, 50_000, 25_000, 12_500, 6_250, 3_125, 1_563])  # halving, whole points
+        runs = finished_runs(CATEGORY_BY_ID["sprint10"], 4)
+        self.assertEqual(len(runs), 4)
+        slow, mid, fast, fastest = runs
+        tokens = {n: await self.account(n) for n in ("alice", "bobby", "carol")}
+
+        async def submit(name, run):
+            return (await self.post("/api/runs", run.to_json(), tokens[name]))[1]
+        r = await submit("alice", mid)
+        self.assertEqual((r["rank"], r["earned"]), (1, 100_000 + cos.PR_REWARD))
+        r = await submit("bobby", fast)   # takes 1st: alice drops to 2nd
+        self.assertEqual((r["rank"], r["earned"]), (1, 100_000 + cos.PR_REWARD))
+        r = await submit("carol", slow)   # 3rd
+        self.assertEqual((r["rank"], r["earned"]), (3, 25_000 + cos.PR_REWARD))
+        r = await submit("carol", slow)   # nothing new
+        self.assertEqual(r["earned"], 0)
+        r = await submit("alice", fastest)  # back to 1st, and a PB if it's 5% better
+        pb = cos.PR_REWARD if fastest.elapsed <= mid.elapsed * 0.95 else 0
+        self.assertEqual((r["rank"], r["earned"]), (1, 100_000 + pb))
+        self.assertTrue(r["wr"])
+
+    async def test_small_improvements_dont_pay_a_pb(self):
+        cat = CATEGORY_BY_ID["sprint10"]
+        runs = finished_runs(cat, 30)
+        pairs = [(a, b) for a, b in zip(runs, runs[1:]) if b.elapsed > a.elapsed * 0.95]  # under 5% faster
+        self.assertTrue(pairs)
+        slower, faster = pairs[0]
+        token = await self.account()
+        await self.post("/api/runs", slower.to_json(), token)
+        r = (await self.post("/api/runs", faster.to_json(), token))[1]
+        self.assertTrue(r["pb"])          # it is a personal best...
+        self.assertEqual(r["earned"], 0)  # ...but too small a step to pay (and still 1st: no place change)
+
+
+class WeeklyTests(ServerTestCase):
+    WEEK = "2026-W46"  # its Classic weeklies are easy for the test bot
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        import opensnake.server as server_module
+        self.real_week = server_module.week_id
+        server_module.week_id = lambda when=None: self.WEEK
+
+    async def asyncTearDown(self):
+        import opensnake.server as server_module
+        server_module.week_id = self.real_week
+        await super().asyncTearDown()
+
+    def test_weekly_categories_are_the_same_everywhere_and_verify(self):
+        from opensnake.speedrun import find_category, verify, weekly_categories
+        cats = weekly_categories(self.WEEK)
+        self.assertEqual(len(cats), 10)
+        self.assertEqual(len({c.id for c in cats}), 10)
+        self.assertEqual([c.id for c in weekly_categories(self.WEEK)], [c.id for c in cats])  # deterministic
+        self.assertNotEqual([c.name for c in weekly_categories("2026-W47")], [c.name for c in cats])
+        classic = next(c for c in cats if not c.modes)
+        self.assertEqual(find_category(classic.id), classic)
+        run = finished_runs(classic, 1)[0]
+        self.assertTrue(verify(run.to_json())[0])
+
+    async def test_this_weeks_runs_pay_and_old_ones_dont(self):
+        from opensnake.speedrun import weekly_categories
+        token = await self.account()
+        status, data = await self.get("/api/weekly")
+        self.assertEqual((status, data["week"], len(data["categories"])), (200, self.WEEK, 10))
+        classic = next(c for c in weekly_categories(self.WEEK) if not c.modes)
+        r = (await self.post("/api/runs", finished_runs(classic, 1)[0].to_json(), token))[1]
+        self.assertTrue(r["valid"])
+        self.assertEqual(r["earned"], 100_000 + cos.PR_REWARD)
+        self.assertEqual((await self.get("/api/weekly"))[1]["categories"][[c.id for c in weekly_categories(self.WEEK)]
+                                                                         .index(classic.id)]["wr"]["player"], "alice")
+        old = next(c for c in weekly_categories("2026-W40") if not c.modes)
+        r = (await self.post("/api/runs", finished_runs(old, 1)[0].to_json(), token))[1]
+        self.assertTrue(r["valid"])       # a past week's run still counts on its leaderboard...
+        self.assertEqual(r["earned"], 0)  # ...but its week is over: no rewards
+        self.assertEqual((await self.post("/api/runs", {"category": "weekly-nope"}, token))[0], 400)
+
+
+class BattlePassTests(ServerTestCase):
+    async def test_buy_level_and_claim(self):
+        token = await self.account()
+        db = self.server.db
+        info = (await self.get("/api/battlepass", token))[1]
+        self.assertEqual((info["owned"], info["level"], info["price"], len(info["tiers"])), (False, 0, 10_000, 20))
+        self.assertEqual(info["tiers"][-1]["level"], 100)
+        self.assertEqual(info["tiers"][-1]["crate"], "royal")
+        self.assertIn("Buy", (await self.post("/api/battlepass/claim", {"level": 5}, token))[1]["error"])
+        self.assertIn("Not enough", (await self.post("/api/battlepass/buy", {}, token))[1]["error"])
+        db.add_points(1, 15_000, "test")
+        status, info = await self.post("/api/battlepass/buy", {}, token)
+        self.assertEqual((status, info["owned"], info["points"]), (200, True, 5_000))
+        self.assertIn("already", (await self.post("/api/battlepass/buy", {}, token))[1]["error"])
+        self.assertIn("Reach level 5", (await self.post("/api/battlepass/claim", {"level": 5}, token))[1]["error"])
+        db.add_xp(1, 12 * cos.LEVEL_XP + 10)
+        info = (await self.get("/api/battlepass", token))[1]
+        self.assertEqual((info["level"], info["into_level"]), (12, 10))
+        r = (await self.post("/api/battlepass/claim", {"level": 5}, token))[1]
+        self.assertEqual((r["tier"]["kind"], r["points"]), ("points", 5_000 + 1_000))
+        r = (await self.post("/api/battlepass/claim", {"level": 10}, token))[1]  # a free Bronze Crate
+        self.assertIn(r["item"], cos.ALL_ITEMS)
+        self.assertIn("already", (await self.post("/api/battlepass/claim", {"level": 5}, token))[1]["error"])
+        self.assertIn("Reach", (await self.post("/api/battlepass/claim", {"level": 15}, token))[1]["error"])
+        self.assertIn("no reward", (await self.post("/api/battlepass/claim", {"level": 7}, token))[1]["error"])
+        claimed = [t["level"] for t in (await self.get("/api/battlepass", token))[1]["tiers"] if t["claimed"]]
+        self.assertEqual(claimed, [5, 10])
+
+    async def test_xp_from_playing_and_levels_past_100_carry_over(self):
+        token = await self.account()
+        db = self.server.db
+        await self.post("/api/rounds", {"fruit": 10}, token)
+        self.assertEqual((await self.get("/api/battlepass", token))[1]["xp"], cos.round_points(10))
+        db.pass_row(1, "2025-W10")  # (past weeks, so they can't clash with the real current week)
+        db.db.execute("UPDATE battlepass SET xp = ? WHERE week = '2025-W10'", (120 * cos.LEVEL_XP + 50,))
+        db.db.commit()
+        row = db.pass_row(1, "2025-W11")  # the next week
+        self.assertEqual(cos.pass_level(row["xp"]), 20)  # level 120 -> 20
+        self.assertEqual(row["xp"], 20 * cos.LEVEL_XP + 50)
+        self.assertEqual(db.pass_row(1, "2025-W13")["xp"], 0)  # (skipped a week: nothing to carry)
+        from opensnake.weeks import previous_week
+        self.assertEqual(previous_week("2026-W01"), "2025-W52")  # (across a new year)
+
+    def test_each_week_has_its_own_rewards(self):
+        a, b = cos.battle_pass("2026-W46"), cos.battle_pass("2026-W47")
+        self.assertEqual([t["level"] for t in a], list(range(5, 101, 5)))
+        self.assertNotEqual([t.get("item") for t in a], [t.get("item") for t in b])
+        for t in a:
+            if t["kind"] == "item":
+                self.assertIn(t["item"], cos.ALL_ITEMS)

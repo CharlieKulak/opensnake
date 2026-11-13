@@ -48,6 +48,7 @@ class Category:
     min_tick_ms: float = 45
     fruit: str = "apple"        # "mixed" changes the random sequence, so it's part of the rules
     custom: bool = False
+    weekly: str = ""            # the week ("2026-W46") of a weekly category
 
     def ms_for(self, score: int) -> float:
         return max(self.min_tick_ms, self.tick_ms - self.accel * score)
@@ -106,6 +107,52 @@ CATEGORIES = [
              goal=15),
 ]
 CATEGORY_BY_ID = {c.id: c for c in CATEGORIES}
+
+
+# ---- weekly categories -------------------------------------------------------------
+#
+# Ten new categories every week, made from the week's name: the server and every
+# player's game build exactly the same ones, so their runs verify like built-in
+# categories. They pay the same rewards, during their week.
+
+WEEKLY_PREFIX = "weekly-"
+WEEKLY_COUNT = 10
+_WEEKLY_MODES = ["wall", "portal", "cheese", "borderless", "twin", "yinyang", "key", "poison", "minesweeper",
+                 "statue", "light", "shield", "arrow", "magnet", "gate", "dimension"]
+_WEEKLY_BOARDS = [(10, 9), (12, 11), (14, 12), (17, 15), (20, 16)]
+
+
+def weekly_categories(week: str) -> list[Category]:
+    from .modes import CONFLICTS, mode_label
+    rng = random.Random(f"opensnake weekly {week}")
+    out = []
+    for n in range(WEEKLY_COUNT):
+        modes = []
+        for _ in range(rng.choice([0, 1, 1, 2, 2])):
+            options = [m for m in _WEEKLY_MODES if m not in modes and
+                       not any((a == m and b in modes) or (b == m and a in modes) for a, b in CONFLICTS)]
+            modes.append(rng.choice(options))
+        w, h = rng.choice(_WEEKLY_BOARDS)
+        goal = rng.choice([10, 15, 20, 25, 30])
+        fruit_count = rng.choice([1, 1, 1, 2, 3, 5])
+        tick = rng.choice([170, 130, 130, 100, 85])
+        label = mode_label(sorted(modes)).replace("Blender: ", "") if modes else "Classic"
+        kind = "Rush" if fruit_count >= 3 else "Dash" if goal <= 10 else "Marathon" if goal >= 25 else "Run"
+        if tick <= 100:
+            kind = "Turbo " + kind
+        rules = _rules(w, h, modes, goal, fruit_count, tick, "apple")
+        out.append(Category(f"{WEEKLY_PREFIX}{week}-{n + 1}", f"{label} {kind}", describe(rules),
+                            w, h, tuple(rules["modes"]), goal, fruit_count, tick, weekly=week))
+    return out
+
+
+def weekly_category(category_id: str) -> Category:
+    """A weekly category from its id ("weekly-2026-W46-3"); raises KeyError if there's no such one."""
+    try:
+        week, number = category_id[len(WEEKLY_PREFIX):].rsplit("-", 1)
+        return weekly_categories(week)[int(number) - 1]
+    except (ValueError, IndexError):
+        raise KeyError(f"unknown category {category_id!r}") from None
 
 
 # ---- custom categories ----------------------------------------------------------
@@ -193,6 +240,8 @@ def find_category(category_id: str, data: dict | None = None) -> Category:
     """A built-in category by id, or a custom one from a run file's definition."""
     if category_id in CATEGORY_BY_ID:
         return CATEGORY_BY_ID[category_id]
+    if category_id.startswith(WEEKLY_PREFIX):
+        return weekly_category(category_id)
     if category_id.startswith(CUSTOM_PREFIX) and data and isinstance(data.get("category_def"), dict):
         c = category_from_def(data["category_def"])
         if c.id != category_id:
