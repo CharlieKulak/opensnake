@@ -6,3 +6,6 @@ dist/
 assets/
 # OpenSnake server data (accounts, login tokens, records): never commit
 web-support/data/
+
+# the Rust game's web build (copied there by the opensnake-rs repo)
+web-support/rs/

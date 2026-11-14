@@ -16,14 +16,14 @@ from opensnake.speedrun import CATEGORY_BY_ID, make_custom  # noqa: E402
 
 class CatalogueTests(ServerTestCase):
     def test_skins_with_the_rarest_only_in_loot_boxes(self):
-        self.assertEqual(len(cos.SKINS), 104)
-        self.assertEqual(len({s.id for s in cos.SKINS}), 104)
+        self.assertEqual(len(cos.SKINS), 123)
+        self.assertEqual(len({s.id for s in cos.SKINS}), 123)
         stands = [s for s in cos.SKINS if s.series == "Stand"]
         self.assertEqual(len(stands), 34)
         self.assertTrue(all(not s.shop for s in stands))
         for s in cos.SKINS:
             self.assertIn(s.rarity, cos.RARITIES)
-            if s.rarity in ("epic", "legendary", "mythic"):
+            if s.rarity in ("epic", "legendary", "mythic") or s.series in ("Pass", "Ranked"):
                 self.assertFalse(s.shop, s.id)
             else:
                 self.assertTrue(s.shop, s.id)
@@ -151,11 +151,14 @@ class StoreTests(ServerTestCase):
         self.assertIn(res["item"], cos.ALL_ITEMS)
         self.assertTrue(res["new"])
         self.assertIn(res["item"], (await self.get("/api/me", token))[1]["inventory"])
-        # a duplicate gives points back
+        # a duplicate is another copy
         before = db.points(1)
         dup = db.open_crate(1, "bronze", FixedRoll(res["item"]))
         self.assertFalse(dup["new"])
-        self.assertEqual(dup["points"], before - 2000 + cos.DUPLICATE_REFUND[cos.item_rarity(res["item"])])
+        self.assertEqual((dup["points"], dup["copies"]), (before - 2000, 2))
+        me = (await self.get("/api/me", token))[1]
+        self.assertEqual(me["inventory"].count(res["item"]), 1)  # (older games see it once)
+        self.assertEqual(me["counts"][res["item"]], 2)
         self.assertIn("Unknown", (await self.post("/api/store/open", {"crate": "nope"}, token))[1]["error"])
 
 
@@ -406,8 +409,9 @@ class ClientRobustnessTests(ServerTestCase):
 
 class RankingTests(ServerTestCase):
     async def test_scores_out_of_100_and_ranked(self):
-        self.assertEqual(cos.player_score(cos.FULL_WRS, 21, 21, cos.FULL_EARNED, len(cos.SKINS))["score"], 100.0)
-        self.assertEqual(cos.player_score(0, 0, 21, 0, 0)["score"], 0.0)
+        self.assertEqual(cos.player_score(cos.FULL_WRS, 21, 21, cos.FULL_EARNED)["score"], 100.0)
+        self.assertEqual(cos.player_score(0, 0, 21, 0)["score"], 0.0)
+        self.assertNotIn("skins", [k for k, _l, _m in cos.SCORE_PARTS])
         a, b = await self.account("alice"), await self.account("bobby")
         await self.account("carol")  # no score: not listed
         db = self.server.db
@@ -424,7 +428,8 @@ class RankingTests(ServerTestCase):
         alice, bobby = by["alice"], by["bobby"]
         self.assertEqual((alice["wrs"], alice["prs"], alice["earned"]),
                          (1, 1, cos.PR_REWARD + cos.WR_REWARD))  # (a PB and 1st place)
-        self.assertEqual((bobby["wrs"], bobby["prs"], bobby["earned"], bobby["skins"]), (0, 0, 50_000, 2))
+        self.assertEqual((bobby["wrs"], bobby["prs"], bobby["earned"]), (0, 0, 50_000))
+        self.assertNotIn("skins", bobby["parts"])
         self.assertEqual([p["name"] for p in data["players"]],
                          sorted(by, key=lambda n: -by[n]["score"]))
         self.assertEqual([p["place"] for p in data["players"]], [1, 2])
@@ -555,17 +560,14 @@ class BattlePassTests(ServerTestCase):
         claimed = [t["level"] for t in (await self.get("/api/battlepass", token))[1]["tiers"] if t["claimed"]]
         self.assertEqual(claimed, [5, 10])
 
-    async def test_a_day_gives_at_most_20_levels(self):
+    async def test_no_daily_cap_but_levels_take_more_xp(self):
         token = await self.account()
         db = self.server.db
-        cap = cos.DAILY_LEVELS * cos.LEVEL_XP
-        self.assertEqual(db.add_xp(1, cap * 3, today="2026-11-13"), cap)  # the rest of a huge haul is lost
-        self.assertEqual(db.add_xp(1, 500, today="2026-11-13"), 0)
-        self.assertEqual(db.add_xp(1, 500, today="2026-11-14"), 500)    # a new day
+        self.assertEqual(cos.LEVEL_XP * cos.PASS_LEVELS, 120_000)
+        self.assertEqual(db.add_xp(1, 130_000), 130_000)  # all of it, in one day
         info = (await self.get("/api/battlepass", token))[1]
-        self.assertEqual(info["level"], (cap + 500) // cos.LEVEL_XP)
-        self.assertEqual(info["day_limit"], cap)
-        self.assertEqual(100 // cos.DAILY_LEVELS, 5)  # level 100 takes five days
+        self.assertEqual(info["level"], 130_000 // cos.LEVEL_XP)
+        self.assertNotIn("day_limit", info)
 
     async def test_xp_from_playing_and_levels_past_100_carry_over(self):
         token = await self.account()
@@ -633,3 +635,202 @@ class RestartWeekTests(ServerTestCase):
                 self.assertTrue(r["valid"])
                 self.assertEqual(r["earned"], 0)
         self.assertEqual(db.restart_week(), f"{week_id()}r2")  # it can happen again
+
+
+class MarketTests(ServerTestCase):
+    async def test_list_buy_cancel_and_fees(self):
+        seller, buyer = await self.account("alice"), await self.account("bobby")
+        db = self.server.db
+        db.grant(1, "skin:galaxy")
+        db.grant(1, "skin:galaxy")  # two copies
+        db.set_profile(1, {"skin": "galaxy"})
+        db.add_points(2, 100_000, "test")
+        status, r = await self.post("/api/market/list", {"item": "skin:galaxy", "price": 40_000}, seller)
+        self.assertEqual((status, r["copies"]), (200, 1))
+        self.assertEqual(db.user_by_id(1)["skin"], "galaxy")  # still has a copy on
+        listing = (await self.get("/api/market?q=gal"))[1]["listings"]
+        self.assertEqual([(x["name"], x["price"], x["seller"]) for x in listing], [("Galaxy", 40_000, "alice")])
+        self.assertIn("own listing", (await self.post("/api/market/buy", {"id": r["id"]}, seller))[1]["error"])
+        status, bought = await self.post("/api/market/buy", {"id": r["id"]}, buyer)
+        self.assertEqual((status, bought["points"], bought["copies"]), (200, 60_000, 1))
+        self.assertEqual(db.points(1), 40_000 - cos.market_fee(40_000))
+        self.assertIn("already sold", (await self.post("/api/market/buy", {"id": r["id"]}, buyer))[1]["error"])
+        # selling isn't "earning" on the leaderboard
+        self.assertFalse(any(p["name"] == "alice" for p in db.rankings()))
+        # listing your last copy takes it off; cancelling gives it back
+        r = (await self.post("/api/market/list", {"item": "skin:galaxy", "price": 500}, seller))[1]
+        self.assertEqual((r["copies"], db.user_by_id(1)["skin"]), (0, ""))
+        self.assertIn("your listings", (await self.post("/api/market/cancel", {"id": r["id"]}, buyer))[1]["error"])
+        self.assertEqual((await self.post("/api/market/cancel", {"id": r["id"]}, seller))[1]["copies"], 1)
+        self.assertEqual((await self.get("/api/market", seller))[1]["mine"], [])
+
+    async def test_what_cant_be_sold(self):
+        token = await self.account()
+        db = self.server.db
+        db.grant(1, "skin:rk_cobra")
+        cases = [({"item": "skin:rk_cobra", "price": 500}, "can't be sold"),
+                 ({"item": "skin:mint", "price": 500}, "don't own"),
+                 ({"item": "skin:nope", "price": 500}, "Unknown"),
+                 ({"item": "skin:rk_cobra", "price": 5}, "can't be sold")]
+        for body, error in cases:
+            self.assertIn(error, (await self.post("/api/market/list", body, token))[1]["error"])
+        db.grant(1, "skin:mint")
+        self.assertIn("Prices", (await self.post("/api/market/list", {"item": "skin:mint", "price": 5}, token))[1]
+                      ["error"])
+        self.assertIn("Prices", (await self.post("/api/market/list", {"item": "skin:mint", "price": "x"}, token))[1]
+                      ["error"].replace("Enter a price.", "Prices"))
+        self.assertEqual(db.copies(1, "skin:mint"), 1)  # nothing was taken by the failed attempts
+
+
+class RankRewardTests(ServerTestCase):
+    async def test_each_rank_pays_once(self):
+        await self.account()
+        db = self.server.db
+        db.db.execute("UPDATE users SET rp = 260 WHERE id = 1")  # Rattler, two ranks up at once
+        got = db.record_match(1, "draw", True, 50)["rank_ups"]
+        self.assertEqual([g["rank"] for g in got], ["Garter", "Rattler"])
+        self.assertTrue({"skin:rk_garter", "skin:rk_rattler"} <= set(db.inventory(1)))
+        points = db.points(1)
+        db.db.execute("UPDATE users SET rp = 90 WHERE id = 1")  # drop back to Hatchling...
+        self.assertEqual(db.record_match(1, "win", True, 0)["rank_ups"], [])  # ...and climb back: nothing
+        self.assertEqual(db.points(1), points)
+        db.db.execute("UPDATE users SET rp = 500 WHERE id = 1")  # a new rank pays
+        self.assertEqual([g["rank"] for g in db.record_match(1, "draw", True, 0)["rank_ups"]], ["Cobra"])
+        self.assertFalse(set(cos.RANKED_ONLY) & {cos.roll(c, random.Random(1)) for c in cos.CRATES for _ in range(50)})
+
+    def test_existing_players_get_rewards_for_ranks_they_have(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from opensnake.server import Database
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "old.db"
+            db = Database(path)
+            db.register("oldie", "password1")
+            db.db.execute("UPDATE users SET rp = 120")
+            db.db.commit()
+            db.close()
+            raw = sqlite3.connect(path)  # make it look like a database from before 2.6
+            raw.execute("ALTER TABLE users DROP COLUMN best_rank")
+            raw.commit()
+            raw.close()
+            db = Database(path)
+            self.assertIn("skin:rk_garter", db.inventory(1))
+            self.assertEqual(db.user_by_id(1)["best_rank"], 1)
+            db.close()
+
+
+class UnrankedTests(ServerTestCase):
+    recv = VersusTests.recv
+
+    async def connect(self, token):
+        ws = await self.client.ws_connect("/ws")
+        self.assertFalse((await self.recv(ws, "welcome"))["account"])
+        await ws.send_json({"t": "auth", "token": token})  # (logging in without the token in the URL)
+        self.assertTrue((await self.recv(ws, "welcome"))["account"])
+        return ws
+
+    async def test_unranked_matches_keep_rank_points(self):
+        a, b = await self.account("alice"), await self.account("bobby")
+        wa, wb = await self.connect(a), await self.connect(b)
+        await wa.send_json({"t": "host", "settings": {"size": "small", "speed": 1.0}, "ranked": False})
+        room = await self.recv(wa, "room")
+        self.assertFalse(room["ranked"])
+        await wb.send_json({"t": "join", "code": room["code"]})
+        await self.recv(wb, "room")
+        await wa.send_json({"t": "start"})
+        ra, rb = await self.recv(wa, "reward", timeout=30), await self.recv(wb, "reward", timeout=30)
+        self.assertEqual((ra["ranked"], ra["rp_change"], rb["rp_change"]), (False, 0, 0))
+        self.assertGreaterEqual(ra["points"], cos.MATCH_PLAYED)  # still pays snake points
+        progress = self.server.db.daily_info(1)
+        if any(c["kind"] == "matches" for c in progress["challenges"]):
+            self.assertEqual(next(c for c in progress["challenges"] if c["kind"] == "matches")["progress"], 1)
+        for ws in (wa, wb):
+            await ws.close()
+
+
+class DailyTests(ServerTestCase):
+    async def test_challenges_progress_and_claims(self):
+        token = await self.account()
+        db = self.server.db
+        day = "2026-11-13"
+        chs = cos.daily_challenges(day)
+        self.assertEqual([c["difficulty"] for c in chs], ["easy", "medium", "hard"])
+        self.assertEqual(chs, cos.daily_challenges(day))  # the same for everyone
+        with self.assertRaisesRegex(ValueError, "Finish the challenge"):
+            db.claim_daily(1, 0, day)
+        for c in chs:
+            db.progress(1, c["kind"], c["goal"], day)
+        before = db.points(1)
+        db.claim_daily(1, 0, day)
+        with self.assertRaisesRegex(ValueError, "already"):
+            db.claim_daily(1, 0, day)
+        with self.assertRaisesRegex(ValueError, "Unknown"):
+            db.claim_daily(1, True, day)
+        db.claim_daily(1, 1, day)
+        db.claim_daily(1, 2, day)
+        db.claim_daily(1, "bonus", day)
+        self.assertEqual(db.points(1) - before, sum(c["reward"] for c in chs) + cos.DAILY_BONUS)
+        info = (await self.get("/api/daily", token))[1]
+        self.assertEqual(info["day"], db.today())
+        self.assertEqual(len(info["challenges"]), 3)
+
+    async def test_rounds_count(self):
+        token = await self.account()
+        await self.post("/api/rounds", {"fruit": 12}, token)
+        info = self.server.db.daily_info(1)
+        for c in info["challenges"]:
+            if c["kind"] == "fruit":
+                self.assertEqual(c["progress"], 12)
+            if c["kind"] == "rounds":
+                self.assertEqual(c["progress"], 1)
+
+
+class RunCheckTests(ServerTestCase):
+    async def test_future_weeks_cant_be_played_early(self):
+        from opensnake.speedrun import weekly_categories
+        from opensnake.weeks import week_id
+        from datetime import datetime, timedelta, timezone
+        token = await self.account()
+        later = week_id(datetime.now(timezone.utc) + timedelta(days=14))
+        cat = weekly_categories(later)[0]
+        run = {"format": 1, "game": "opensnake", "category": cat.id, "seed": 1, "time_ms": 1000, "inputs": []}
+        self.assertIn("hasn't started", (await self.post("/api/runs", run, token))[1]["error"])
+
+    def test_replays_stop_at_the_claimed_time(self):
+        import time
+        from opensnake.speedrun import RUN_FORMAT, verify
+        wrap = CATEGORY_BY_ID["wrap"]
+        # a run that just goes round and round (borderless), claiming a short time
+        run = {"format": RUN_FORMAT, "game": "opensnake", "category": wrap.id, "seed": 1, "time_ms": 5_000,
+               "inputs": [[0, "right"]]}
+        start = time.perf_counter()
+        ok, _msg = verify(run)
+        self.assertFalse(ok)
+        self.assertLess(time.perf_counter() - start, 1.0)
+        self.assertFalse(verify({**run, "time_ms": 10 ** 12})[0])
+        self.assertFalse(verify({**run, "time_ms": "5000"})[0])
+
+
+class RustGameTests(ServerTestCase):
+    async def test_the_rust_web_build_is_served_at_rs(self):
+        from pathlib import Path
+        from aiohttp.test_utils import TestClient, TestServer
+        from opensnake.server import Server
+        rs = Path(self.tmp.name) / "rs"
+        rs.mkdir()
+        (rs / "index.html").write_text("<html>rust</html>")
+        (rs / "opensnake.wasm").write_bytes(b"\0asm")
+        server = Server(Path(self.tmp.name) / "b", None, rs)
+        client = TestClient(TestServer(server.app()))
+        await client.start_server()
+        try:
+            r = await client.get("/rs/")
+            self.assertEqual((r.status, await r.text()), (200, "<html>rust</html>"))
+            r = await client.get("/rs/opensnake.wasm")
+            self.assertEqual(r.status, 200)
+            r = await client.get("/rs", allow_redirects=False)
+            self.assertEqual((r.status, r.headers["Location"]), (302, "/rs/"))
+            self.assertEqual((await client.get("/api/info")).status, 200)
+        finally:
+            await client.close()

@@ -21,7 +21,13 @@ HTTP API (JSON):
     POST /api/friends/add     {name}             -> send (or accept) a friend request
     POST /api/friends/remove  {name}             -> unfriend, decline or cancel
     POST /api/store/buy       {item}             -> buy a shop skin with snake points
-    POST /api/store/open      {crate}            -> open a loot box: {item, new, refund, points}
+    POST /api/store/open      {crate}            -> open a loot box: {item, new, copies, points}
+    GET  /api/market?q=&rarity=&sort=            -> {listings, mine}: skins and packs players are selling
+    POST /api/market/list     {item, price}      -> put one copy of an item up for sale
+    POST /api/market/cancel   {id}               -> take your listing down (you get the item back)
+    POST /api/market/buy      {id}               -> buy a listing
+    GET  /api/daily                              -> today's three challenges and your progress
+    POST /api/daily/claim     {id} (0-2 or "bonus") -> claim a finished challenge's snake points
     POST /api/rounds          {fruit}            -> snake points for a finished round
     GET  /api/categories?q=                      -> community custom speedrun categories
     POST /api/categories      {def}              -> share a custom category
@@ -65,13 +71,14 @@ from .bots import BOT_NAMES, LEVEL_NAMES, LEVELS
 from .bots import choose as bot_choose
 from .game import DIRS, MAX_LATE_MOVES, Game, game_to_state
 from .modes import BUILTIN_MODE_IDS, VERSUS_MODES, VERSUS_SIZES, speed_ms
-from .speedrun import (CATEGORY_BY_ID, CUSTOM_PREFIX, WEEKLY_PREFIX, category_from_def, find_category, verify,
-                       weekly_categories)
-from .weeks import previous_week, time_left, week_end, week_id
+from .speedrun import (CATEGORY_BY_ID, CUSTOM_PREFIX, WEEKLY_PREFIX, category_def, category_from_def,
+                       find_category, verify, weekly_categories)
+from .weeks import previous_week, time_left, week_end, week_id, week_start
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_WEB = REPO / "web-support" / "build" / "opensnake" / "build" / "web"
 DEFAULT_DATA = REPO / "web-support" / "data"
+DEFAULT_RS = REPO / "web-support" / "rs"
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,20}$")
 MIN_PASSWORD = 4
@@ -85,6 +92,7 @@ MAX_BIO = 160
 MAX_CATEGORY_NAME = 40
 MAX_MESSAGE = 500
 MESSAGE_GAP = 0.3   # seconds between messages from one account (no flooding)
+MAX_ROUND_FRUIT = 300  # most fruit one round counts towards daily challenges
 ROUND_GAP = 2.0  # seconds between paid single-player rounds (one account can't farm faster)
 MAX_PICTURE_BYTES = 256 * 1024
 MAX_PICTURE_SIDE = 512
@@ -149,6 +157,13 @@ class Database:
             CREATE TABLE IF NOT EXISTS ledger (
                 id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, amount INTEGER NOT NULL, reason TEXT NOT NULL,
                 created TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS listings (
+                id INTEGER PRIMARY KEY, seller INTEGER NOT NULL, item TEXT NOT NULL, price INTEGER NOT NULL,
+                created TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS listings_item ON listings(item, price);
+            CREATE TABLE IF NOT EXISTS daily (
+                user_id INTEGER NOT NULL, day TEXT NOT NULL, progress TEXT NOT NULL DEFAULT '{}',
+                claimed TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (user_id, day));
         """)
         # Profile, points and rank columns (added in 2.0): add them to the users table if it's older.
         have = {r[1] for r in self.db.execute("PRAGMA table_info(users)")}
@@ -158,12 +173,22 @@ class Database:
                              ("losses", "INTEGER NOT NULL DEFAULT 0"), ("draws", "INTEGER NOT NULL DEFAULT 0")):
             if column not in have:
                 self.db.execute(f"ALTER TABLE users ADD COLUMN {column} {decl}")
-        # The battle pass's daily XP cap (added in 2.6).
+        # The highest rank each player has reached, so rank-up rewards pay once (added in 2.6).
+        new_best_rank = "best_rank" not in have
+        if new_best_rank:
+            self.db.execute("ALTER TABLE users ADD COLUMN best_rank INTEGER NOT NULL DEFAULT 0")
+        # The battle pass's old daily XP cap (2.6 development; no longer used).
         have = {r[1] for r in self.db.execute("PRAGMA table_info(battlepass)")}
         for column, decl in (("day", "TEXT NOT NULL DEFAULT ''"), ("day_xp", "INTEGER NOT NULL DEFAULT 0")):
             if column not in have:
                 self.db.execute(f"ALTER TABLE battlepass ADD COLUMN {column} {decl}")
+        # Copies of items: you can own an item more than once (added in 2.6).
+        if "qty" not in {r[1] for r in self.db.execute("PRAGMA table_info(inventory)")}:
+            self.db.execute("ALTER TABLE inventory ADD COLUMN qty INTEGER NOT NULL DEFAULT 1")
         self.db.commit()  # one write for all of it
+        if new_best_rank:  # pay the rewards for ranks players had already reached
+            for row in self.db.execute("SELECT id FROM users WHERE rp > 0").fetchall():
+                self.rank_up(row["id"])
 
     def close(self) -> None:
         self.db.close()
@@ -295,6 +320,8 @@ class Database:
         if private:
             out["points"] = row["points"]
             out["inventory"] = self.inventory(row["id"])
+            out["counts"] = self.counts(row["id"])
+            out["best_rank"] = cos.RANKS[row["best_rank"]][1]
         return out
 
     def set_profile(self, user_id: int, data: dict) -> None:
@@ -337,14 +364,39 @@ class Database:
     # -- items
 
     def inventory(self, user_id: int) -> list[str]:
+        """Every item a player owns (once each, however many copies)."""
         return [r[0] for r in self.db.execute("SELECT item FROM inventory WHERE user_id = ? ORDER BY created",
                                               (user_id,))]
 
-    def grant(self, user_id: int, item: str) -> bool:
-        """Give an item; False if they already had it."""
-        cur = self.db.execute("INSERT OR IGNORE INTO inventory VALUES (?, ?, ?)", (user_id, item, now_iso()))
-        self.db.commit()
-        return cur.rowcount == 1
+    def counts(self, user_id: int) -> dict[str, int]:
+        """How many copies of each item a player owns."""
+        return dict(self.db.execute("SELECT item, qty FROM inventory WHERE user_id = ?", (user_id,)).fetchall())
+
+    def copies(self, user_id: int, item: str) -> int:
+        row = self.db.execute("SELECT qty FROM inventory WHERE user_id = ? AND item = ?", (user_id, item)).fetchone()
+        return row[0] if row else 0
+
+    def grant(self, user_id: int, item: str, commit: bool = True) -> bool:
+        """Give a copy of an item; False if they already had one."""
+        new = self.copies(user_id, item) == 0
+        self.db.execute("INSERT INTO inventory (user_id, item, created, qty) VALUES (?, ?, ?, 1) "
+                        "ON CONFLICT(user_id, item) DO UPDATE SET qty = qty + 1", (user_id, item, now_iso()))
+        if commit:
+            self.db.commit()
+        return new
+
+    def take(self, user_id: int, item: str) -> None:
+        """Take one copy of an item away (into a market listing); unequips a skin when the last copy goes."""
+        have = self.copies(user_id, item)
+        if have <= 0:
+            raise ValueError("You don't own that.")
+        if have == 1:
+            self.db.execute("DELETE FROM inventory WHERE user_id = ? AND item = ?", (user_id, item))
+            kind, _, key = item.partition(":")
+            if kind == "skin":
+                self.db.execute("UPDATE users SET skin = '' WHERE id = ? AND skin = ?", (user_id, key))
+        else:
+            self.db.execute("UPDATE inventory SET qty = qty - 1 WHERE user_id = ? AND item = ?", (user_id, item))
 
     def buy(self, user_id: int, item: str) -> int:
         """Buy a shop skin or texture pack; returns the new balance."""
@@ -370,11 +422,97 @@ class Database:
         return self.give_item(user_id, cos.roll(crate, rng))
 
     def give_item(self, user_id: int, item: str) -> dict:
-        """Grant an item, or points back if they already have it."""
+        """Grant a copy of an item (a duplicate is another copy, to keep or sell on the market)."""
         new = self.grant(user_id, item)
-        refund = 0 if new else cos.DUPLICATE_REFUND[cos.item_rarity(item)]
-        balance = self.add_points(user_id, refund, f"duplicate {item}") if refund else self.points(user_id)
-        return {"item": item, "new": new, "refund": refund, "points": balance}
+        # ("refund" stays for older games, which show it for duplicates)
+        return {"item": item, "new": new, "refund": 0, "copies": self.copies(user_id, item),
+                "points": self.points(user_id)}
+
+    # -- the player market
+
+    def market(self, query: str = "", rarity: str = "", sort: str = "cheap", limit: int = 60) -> list[dict]:
+        """Listings for sale, searched by item name and filtered by rarity."""
+        order = {"cheap": "price, listings.id", "pricey": "price DESC, listings.id",
+                 "new": "listings.id DESC"}.get(sort, "price, listings.id")
+        rows = self.db.execute(f"SELECT listings.*, users.name AS seller_name FROM listings "
+                               f"JOIN users ON users.id = listings.seller ORDER BY {order}").fetchall()
+        words = query.lower().split()
+        out = []
+        for r in rows:
+            name = cos.item_name(r["item"])
+            if rarity and cos.item_rarity(r["item"]) != rarity:
+                continue
+            if not all(w in f"{name} {r['seller_name']}".lower() for w in words):
+                continue
+            out.append(self.listing(r, name))
+            if len(out) >= limit:
+                break
+        return out
+
+    @staticmethod
+    def listing(r: sqlite3.Row, name: str | None = None) -> dict:
+        return {"id": r["id"], "item": r["item"], "name": name or cos.item_name(r["item"]),
+                "rarity": cos.item_rarity(r["item"]), "price": r["price"], "seller": r["seller_name"],
+                "created": r["created"]}
+
+    def my_listings(self, user_id: int) -> list[dict]:
+        rows = self.db.execute("SELECT listings.*, users.name AS seller_name FROM listings "
+                               "JOIN users ON users.id = listings.seller WHERE seller = ? ORDER BY listings.id DESC",
+                               (user_id,)).fetchall()
+        return [self.listing(r) for r in rows]
+
+    def list_item(self, user_id: int, item: str, price) -> dict:
+        """Put one copy of an item up for sale (it's held by the market until it sells or you cancel)."""
+        if cos.item_rarity(item) is None:
+            raise ValueError("Unknown item.")
+        if item in cos.UNTRADEABLE:
+            raise ValueError("Ranked skins can't be sold.")
+        try:
+            price = int(price)
+        except (TypeError, ValueError):
+            raise ValueError("Enter a price.") from None
+        if not cos.MARKET_MIN_PRICE <= price <= cos.MARKET_MAX_PRICE:
+            raise ValueError(f"Prices go from {cos.MARKET_MIN_PRICE:,} to {cos.MARKET_MAX_PRICE:,} snake points.")
+        if self.db.execute("SELECT COUNT(*) FROM listings WHERE seller = ?", (user_id,)).fetchone()[0] \
+                >= cos.MARKET_MAX_LISTINGS:
+            raise ValueError(f"You can have {cos.MARKET_MAX_LISTINGS} things for sale at once.")
+        with self.db:
+            self.take(user_id, item)
+            cur = self.db.execute("INSERT INTO listings (seller, item, price, created) VALUES (?, ?, ?, ?)",
+                                  (user_id, item, price, now_iso()))
+        return {"id": cur.lastrowid, "copies": self.copies(user_id, item)}
+
+    def cancel_listing(self, user_id: int, listing_id) -> str:
+        row = self.db.execute("SELECT * FROM listings WHERE id = ?", (listing_id,)).fetchone()
+        if not row or row["seller"] != user_id:
+            raise ValueError("That isn't one of your listings.")
+        with self.db:
+            self.db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
+            self.grant(user_id, row["item"], commit=False)
+        return row["item"]
+
+    def buy_listing(self, user_id: int, listing_id) -> dict:
+        """Buy a listing: the price goes to the seller (less the market fee) and the item to you."""
+        row = self.db.execute("SELECT * FROM listings WHERE id = ?", (listing_id,)).fetchone()
+        if not row:
+            raise ValueError("That's already sold (or was taken off the market).")
+        if row["seller"] == user_id:
+            raise ValueError("That's your own listing: cancel it to get it back.")
+        price, item = row["price"], row["item"]
+        if self.points(user_id) < price:
+            raise ValueError("Not enough snake points.")
+        name = cos.item_name(item)
+        fee = cos.market_fee(price)
+        with self.db:
+            self.db.execute("DELETE FROM listings WHERE id = ?", (listing_id,))
+            self.db.execute("UPDATE users SET points = points - ? WHERE id = ?", (price, user_id))
+            self.db.execute("UPDATE users SET points = points + ? WHERE id = ?", (price - fee, row["seller"]))
+            self.db.execute("INSERT INTO ledger (user_id, amount, reason, created) VALUES (?, ?, ?, ?), "
+                            "(?, ?, ?, ?)", (user_id, -price, f"market: bought {item}", now_iso(),
+                                             row["seller"], price - fee, f"market: sold {item}", now_iso()))
+            self.grant(user_id, item, commit=False)
+        return {"item": item, "name": name, "price": price, "seller_id": row["seller"], "fee": fee,
+                "points": self.points(user_id), "copies": self.copies(user_id, item)}
 
     # -- the battle pass
 
@@ -411,18 +549,14 @@ class Database:
         self.db.commit()
         return self.pass_row(user_id, week)
 
-    def add_xp(self, user_id: int, xp: int, today: str | None = None) -> int:
-        """Add battle pass XP, up to the day's limit (so level 100 takes five days); returns what was added."""
+    def add_xp(self, user_id: int, xp: int) -> int:
+        """Add battle pass XP; returns what was added."""
         if xp <= 0:
             return 0
         row = self.pass_row(user_id)
-        today = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        used = row["day_xp"] if row["day"] == today else 0
-        added = max(0, min(xp, cos.DAILY_LEVELS * cos.LEVEL_XP - used))
-        self.db.execute("UPDATE battlepass SET xp = xp + ?, day = ?, day_xp = ? WHERE user_id = ? AND week = ?",
-                        (added, today, used + added, user_id, row["week"]))
+        self.db.execute("UPDATE battlepass SET xp = xp + ? WHERE user_id = ? AND week = ?", (xp, user_id, row["week"]))
         self.db.commit()
-        return added
+        return xp
 
     def buy_pass(self, user_id: int) -> int:
         row = self.pass_row(user_id)
@@ -461,13 +595,7 @@ class Database:
         week, xp = row["week"], row["xp"]
         level = cos.pass_level(xp)
         claimed = set(json.loads(row["claimed"]))
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        day_xp = row["day_xp"] if row["day"] == today else 0
-        tomorrow = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        resets = int((tomorrow - datetime.now(timezone.utc)).total_seconds())
         return {"week": week, "ends": week_end(week).strftime("%Y-%m-%dT%H:%M:%SZ"), "left": time_left(week),
-                "day_xp": day_xp, "day_limit": cos.DAILY_LEVELS * cos.LEVEL_XP,
-                "day_resets": f"{resets // 3600}h {resets % 3600 // 60}m",
                 "owned": bool(row["owned"]), "price": cos.PASS_PRICE, "xp": xp, "level": level,
                 "level_xp": cos.LEVEL_XP, "into_level": xp - level * cos.LEVEL_XP, "max": cos.PASS_LEVELS,
                 "tiers": [{**t, "claimed": t["level"] in claimed, "reached": level >= t["level"]}
@@ -552,15 +680,106 @@ class Database:
     # -- versus results
 
     def record_match(self, user_id: int, result: str, ranked: bool, points: int) -> dict:
-        """Points (and, against other people, rank points) for a finished versus match."""
+        """Points (and, in ranked matches against other people, rank points) for a finished versus match."""
         delta = {"win": cos.RP_WIN, "loss": cos.RP_LOSS, "draw": cos.RP_DRAW}[result] if ranked else 0
         column = {"win": "wins", "loss": "losses", "draw": "draws"}[result]
         if ranked:
             self.db.execute(f"UPDATE users SET rp = MAX(0, rp + ?), {column} = {column} + 1 WHERE id = ?",
                             (delta, user_id))
-        balance = self.add_points(user_id, points, f"versus {result}")
+        self.add_points(user_id, points, f"versus {result}")
+        rank_ups = self.rank_up(user_id)
         rp = self.user_by_id(user_id)["rp"]
-        return {"points": points, "balance": balance, "rp": rp, "rp_change": delta, "rank": cos.rank_for(rp)[1]}
+        return {"points": points, "balance": self.points(user_id), "rp": rp, "rp_change": delta,
+                "rank": cos.rank_for(rp)[1], "rank_ups": rank_ups}
+
+    def rank_up(self, user_id: int, rng=random) -> list[dict]:
+        """Rewards for every rank reached for the first time: [{"rank", "rewards": [names]}].
+
+        Each rank pays once: dropping down and climbing back up again pays nothing."""
+        row = self.user_by_id(user_id)
+        index = cos.rank_for(row["rp"])[0]
+        best = row["best_rank"]
+        if index <= best:
+            return []
+        self.db.execute("UPDATE users SET best_rank = ? WHERE id = ?", (index, user_id))
+        self.db.commit()
+        out = []
+        for reached in range(best + 1, index + 1):
+            name = cos.RANKS[reached][1]
+            got = []
+            for kind, value in cos.RANK_REWARDS.get(reached, []):
+                if kind == "points":
+                    self.add_points(user_id, value, f"reached {name}")
+                    got.append(f"{value:,} snake points")
+                elif kind == "crate":
+                    res = self.open_crate(user_id, value, rng, free=True)
+                    got.append(f"{cos.CRATE_BY_ID[value].name}: {cos.item_name(res['item'])}")
+                else:
+                    self.grant(user_id, value)
+                    got.append(cos.item_name(value))
+            out.append({"rank": name, "rewards": got})
+        return out
+
+    # -- daily challenges
+
+    @staticmethod
+    def today() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def daily_row(self, user_id: int, day: str) -> sqlite3.Row:
+        self.db.execute("INSERT OR IGNORE INTO daily (user_id, day) VALUES (?, ?)", (user_id, day))
+        return self.db.execute("SELECT * FROM daily WHERE user_id = ? AND day = ?", (user_id, day)).fetchone()
+
+    def progress(self, user_id: int, kind: str, amount: int = 1, day: str | None = None) -> None:
+        """Count something towards today's challenges (fruit eaten, matches won, ...)."""
+        day = day or self.today()
+        if amount <= 0 or not any(c["kind"] == kind for c in cos.daily_challenges(day)):
+            return
+        row = self.daily_row(user_id, day)
+        progress = json.loads(row["progress"])
+        progress[kind] = progress.get(kind, 0) + amount
+        self.db.execute("UPDATE daily SET progress = ? WHERE user_id = ? AND day = ?",
+                        (json.dumps(progress), user_id, day))
+        self.db.commit()
+
+    def daily_info(self, user_id: int, day: str | None = None) -> dict:
+        day = day or self.today()
+        row = self.daily_row(user_id, day)
+        self.db.commit()
+        progress, claimed = json.loads(row["progress"]), set(json.loads(row["claimed"]))
+        challenges = [{**c, "progress": min(c["goal"], progress.get(c["kind"], 0)),
+                       "done": progress.get(c["kind"], 0) >= c["goal"], "claimed": c["id"] in claimed}
+                      for c in cos.daily_challenges(day)]
+        tomorrow = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+        left = max(0, int((tomorrow - datetime.now(timezone.utc)).total_seconds()))
+        return {"day": day, "challenges": challenges, "bonus": cos.DAILY_BONUS,
+                "bonus_ready": all(c["done"] for c in challenges), "bonus_claimed": "bonus" in claimed,
+                "left": f"{left // 3600}h {left % 3600 // 60}m"}
+
+    def claim_daily(self, user_id: int, which, day: str | None = None) -> int:
+        """Claim a finished challenge's reward (0, 1, 2) or the bonus for all three ("bonus")."""
+        day = day or self.today()
+        if which != "bonus" and (isinstance(which, bool) or not isinstance(which, int)):
+            raise ValueError("Unknown challenge.")
+        info = self.daily_info(user_id, day)
+        if which == "bonus":
+            if not info["bonus_ready"]:
+                raise ValueError("Finish all three challenges first.")
+            amount, reason = cos.DAILY_BONUS, "daily challenges: all three"
+        else:
+            ch = next((c for c in info["challenges"] if c["id"] == which), None)
+            if not ch:
+                raise ValueError("Unknown challenge.")
+            if not ch["done"]:
+                raise ValueError("Finish the challenge first.")
+            amount, reason = ch["reward"], f"daily challenge: {ch['text']}"
+        row = self.daily_row(user_id, day)
+        claimed = json.loads(row["claimed"])
+        if which in claimed:
+            raise ValueError("You've already claimed that.")
+        claimed.append(which)
+        self.db.execute("UPDATE daily SET claimed = ? WHERE user_id = ? AND day = ?", (json.dumps(claimed), user_id, day))
+        return self.add_points(user_id, amount, reason)
 
     # -- the community leaderboard
 
@@ -574,19 +793,22 @@ class Database:
                 wrs[rec["player"].lower()] = wrs.get(rec["player"].lower(), 0) + 1
         prs = dict(self.db.execute(f"SELECT user_id, COUNT(DISTINCT category) FROM runs WHERE category IN ({marks}) "
                                    "GROUP BY user_id", builtin).fetchall())
+        # (selling on the market only moves points between players, so it isn't earning)
         earned = dict(self.db.execute("SELECT user_id, SUM(amount) FROM ledger WHERE amount > 0 "
-                                      "AND reason NOT LIKE 'duplicate%' GROUP BY user_id").fetchall())
+                                      "AND reason NOT LIKE 'duplicate%' AND reason NOT LIKE 'market:%' "
+                                      "GROUP BY user_id").fetchall())
+        # (skins don't count towards the score; the count is still sent for games from before 2.6)
         skins = dict(self.db.execute("SELECT user_id, COUNT(*) FROM inventory WHERE item LIKE 'skin:%' "
                                      "GROUP BY user_id").fetchall())
         out = []
         for row in self.db.execute("SELECT id, name, avatar, rp FROM users").fetchall():
             stats = {"wrs": wrs.get(row["name"].lower(), 0), "prs": prs.get(row["id"], 0),
-                     "earned": earned.get(row["id"], 0) or 0, "skins": skins.get(row["id"], 0)}
-            result = cos.player_score(stats["wrs"], stats["prs"], len(builtin), stats["earned"], stats["skins"])
+                     "earned": earned.get(row["id"], 0) or 0}
+            result = cos.player_score(stats["wrs"], stats["prs"], len(builtin), stats["earned"])
             if result["score"] <= 0:
                 continue
             out.append({"name": row["name"], "avatar": row["avatar"] or cos.DEFAULT_AVATAR,
-                        "rank": cos.rank_for(row["rp"])[1], **stats, **result})
+                        "rank": cos.rank_for(row["rp"])[1], **stats, "skins": skins.get(row["id"], 0), **result})
         out.sort(key=lambda p: (-p["score"], p["name"].lower()))
         for place, p in enumerate(out, 1):
             p["place"] = place
@@ -673,10 +895,11 @@ class Room:
         self.scheduled: list[tuple[int, int, str]] = []  # (move, snake, direction): turns for a later move
         self.name = f"{host.name}'s match"
         self.public = False  # public matches show up in everyone's match search
+        self.ranked = True   # ranked matches against other people change rank points
 
     def info(self) -> dict:
         return {"t": "room", "code": self.code, "host": self.host.id, "state": self.state,
-                "name": self.name, "public": self.public, "settings": self.settings,
+                "name": self.name, "public": self.public, "ranked": self.ranked, "settings": self.settings,
                 "players": [{"id": p.id, "name": p.name, "team": p.team, "bot": p.bot, "rank": p.rank,
                              "avatar": p.avatar} for p in self.players]}
 
@@ -715,6 +938,8 @@ class Room:
             self.name = clean_text(m["name"], MAX_MATCH_NAME) or f"{self.host.name}'s match"
         if isinstance(m.get("public"), bool):
             self.public = m["public"]
+        if isinstance(m.get("ranked"), bool) and self.state == "lobby":
+            self.ranked = m["ranked"]
 
     @property
     def open(self) -> bool:
@@ -725,7 +950,7 @@ class Room:
         s = self.settings
         return {"code": self.code, "name": self.name, "host": self.host.name, "players": len(self.players),
                 "max": 2 * MAX_TEAM, "size": s["size"], "speed": s["speed"], "goal": s["goal"],
-                "modes": s["modes"]}
+                "modes": s["modes"], "ranked": self.ranked}
 
     async def broadcast(self, msg: dict) -> None:
         text = json.dumps(msg, separators=(",", ":"))
@@ -835,16 +1060,22 @@ class Room:
             g.input_for(snake, d)
 
     async def reward(self, g: Game) -> None:
-        """Snake points for everyone with an account, and rank points if they played other people."""
-        ranked = len(self.humans) >= 2
+        """Snake points for everyone with an account, and rank points in ranked matches against other people."""
+        ranked = self.ranked and len(self.humans) >= 2
         for p in self.players:
             if p.user_id is None or not (0 <= p.snake < len(g.snakes)):
                 continue
             result = "draw" if g.winner is None else ("win" if g.winner == p.team else "loss")
             points = cos.MATCH_PLAYED + cos.MATCH_PER_FRUIT * g.snakes[p.snake].score + \
                 (cos.MATCH_WIN if result == "win" else 0)
-            info = self.server.db.record_match(p.user_id, result, ranked, points)
-            self.server.db.add_xp(p.user_id, points)
+            db = self.server.db
+            info = db.record_match(p.user_id, result, ranked, points)
+            db.add_xp(p.user_id, points)
+            db.progress(p.user_id, "matches")
+            # (wins count against people, or bots that aren't on easy)
+            if result == "win" and (len(self.humans) >= 2 or any(q.bot and q.bot != "easy" for q in self.players
+                                                                   if q.team != p.team)):
+                db.progress(p.user_id, "wins")
             p.rank = info["rank"]
             await self.send(p, {"t": "reward", "result": result, "ranked": ranked, **info})
 
@@ -856,9 +1087,11 @@ class Room:
 # ---- the server ---------------------------------------------------------------------
 
 class Server:
-    def __init__(self, data_dir: Path, web_dir: Path | None):
+    def __init__(self, data_dir: Path, web_dir: Path | None, rs_dir: Path | None = None):
         self.db = Database(data_dir / "opensnake.db")
         self.web_dir = web_dir if web_dir and (web_dir / "index.html").is_file() else None
+        # The Rust version of the game (OpenSnake in Rust), served at /rs/ when it's there
+        self.rs_dir = rs_dir if rs_dir and (rs_dir / "index.html").is_file() else None
         self.rooms: dict[str, Room] = {}
         self.next_pid = 1
         self.connected: dict[int, set[Player]] = {}  # account id -> its open connections (who's online)
@@ -933,10 +1166,20 @@ class Server:
         r.add_get("/api/battlepass", self.battlepass)
         r.add_post("/api/battlepass/buy", self.buy_pass)
         r.add_post("/api/battlepass/claim", self.claim_pass)
+        r.add_get("/api/market", self.market)
+        r.add_post("/api/market/list", self.market_list)
+        r.add_post("/api/market/cancel", self.market_cancel)
+        r.add_post("/api/market/buy", self.market_buy)
+        r.add_get("/api/daily", self.daily)
+        r.add_post("/api/daily/claim", self.claim_daily)
         r.add_get("/api/messages", self.chats)
         r.add_get("/api/messages/{name}", self.conversation)
         r.add_post("/api/messages", self.send_message)
         r.add_get("/ws", self.websocket)
+        if self.rs_dir:  # (before the main game's "/", which would catch /rs/ too)
+            r.add_get("/rs", self.rs_redirect)
+            r.add_get("/rs/", self.rs_index)
+            r.add_static("/rs/", self.rs_dir)
         if self.web_dir:
             r.add_get("/", self.index)
             r.add_static("/", self.web_dir)
@@ -969,6 +1212,13 @@ class Server:
     # -- web game
     async def index(self, request: web.Request) -> web.StreamResponse:
         return web.FileResponse(self.web_dir / "index.html", headers={"Cache-Control": "no-store"})
+
+    async def rs_index(self, request: web.Request) -> web.StreamResponse:
+        return web.FileResponse(self.rs_dir / "index.html", headers={"Cache-Control": "no-store"})
+
+    @staticmethod
+    async def rs_redirect(request: web.Request) -> web.StreamResponse:
+        raise web.HTTPFound("/rs/")
 
     # -- accounts
     async def info(self, request: web.Request) -> web.Response:
@@ -1104,6 +1354,59 @@ class Server:
             return self.error(str(e))
         return web.json_response({"item": item, "points": balance})
 
+    # -- the player market
+    async def market(self, request: web.Request) -> web.Response:
+        q = request.query
+        user = self.db.user_for(self.token(request))
+        rarity = q.get("rarity", "") if q.get("rarity", "") in cos.RARITIES else ""
+        return web.json_response({
+            "listings": self.db.market(q.get("q", "").strip()[:40], rarity, q.get("sort", "cheap")),
+            "mine": self.db.my_listings(user["id"]) if user else [], "fee": cos.MARKET_FEE,
+            "min": cos.MARKET_MIN_PRICE, "max": cos.MARKET_MAX_PRICE})
+
+    async def market_list(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to sell things.")
+        data = await self.body(request)
+        try:
+            result = self.db.list_item(user["id"], str(data.get("item", "")), data.get("price"))
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response({**result, "points": self.db.points(user["id"])})
+
+    async def market_cancel(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to use the market.")
+        try:
+            item = self.db.cancel_listing(user["id"], (await self.body(request)).get("id"))
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response({"item": item, "copies": self.db.copies(user["id"], item)})
+
+    async def market_buy(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to buy things.")
+        try:
+            result = self.db.buy_listing(user["id"], (await self.body(request)).get("id"))
+        except ValueError as e:
+            return self.error(str(e))
+        seller = result.pop("seller_id")
+        await self.notify(seller, {"t": "sold", "item": result["item"], "name": result["name"],
+                                   "price": result["price"], "earned": result["price"] - result["fee"],
+                                   "buyer": user["name"]})
+        return web.json_response(result)
+
+    # -- daily challenges
+    async def daily(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in for daily challenges.")
+        return web.json_response(self.db.daily_info(user["id"]))
+
+    async def claim_daily(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in for daily challenges.")
+        which = (await self.body(request)).get("id")
+        try:
+            points = self.db.claim_daily(user["id"], which)
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response({"points": points, **self.db.daily_info(user["id"])})
+
     async def open_crate(self, request: web.Request) -> web.Response:
         user = self.account(request, "Log in to open loot boxes.")
         try:
@@ -1125,6 +1428,8 @@ class Server:
         self.last_round[user["id"]] = now
         earned = cos.round_points(fruit)
         self.db.add_xp(user["id"], earned)
+        self.db.progress(user["id"], "rounds")
+        self.db.progress(user["id"], "fruit", min(fruit, MAX_ROUND_FRUIT))
         return web.json_response({"earned": earned, "points": self.db.add_points(user["id"], earned, "round")})
 
     # -- community categories
@@ -1220,6 +1525,9 @@ class Server:
             return self.error("Unknown category.")
         try:
             weekly = find_category(category, run).weekly if category.startswith(WEEKLY_PREFIX) else ""
+            # (weekly speedruns are made from the week's name: no getting a head start on later weeks)
+            if weekly and week_start(weekly) > week_start(self.db.current_week()):
+                return self.error("That week hasn't started yet.")
         except (KeyError, ValueError):
             return self.error("Unknown category.")
         # Only built-in modes count online: mod modes (or anything else) can't set records.
@@ -1227,6 +1535,8 @@ class Server:
         modes = definition.get("modes", [])
         if not isinstance(modes, list) or any(m not in BUILTIN_MODE_IDS for m in modes):
             return self.error("Runs using mods or unknown modes can't be submitted.")
+        if not isinstance(run.get("time_ms"), int) or isinstance(run.get("time_ms"), bool):
+            return self.error("The run has no time.")  # (verify() only limits the replay by the claimed time)
         # Replaying can take a moment for long runs; keep the server responsive meanwhile.
         ok, message = await asyncio.get_running_loop().run_in_executor(None, verify, run)
         if not ok:
@@ -1254,6 +1564,11 @@ class Server:
             if earned:
                 self.db.add_points(user["id"], earned, f"place {rank} in {category}")
             self.db.add_xp(user["id"], (cos.XP_WEEKLY if weekly else cos.XP_SPEEDRUN) + (cos.XP_PB if pb else 0))
+            self.db.progress(user["id"], "speedruns")
+            if weekly:
+                self.db.progress(user["id"], "weekly")
+            if pb and before is not None:  # (a first finish isn't a new best)
+                self.db.progress(user["id"], "pbs")
             if category in CATEGORY_BY_ID:
                 self.db.settle_wr_holds()
         elif definition and not weekly:
@@ -1273,7 +1588,8 @@ class Server:
         for c in weekly_categories(week):
             players = self.db.db.execute("SELECT COUNT(DISTINCT user_id) FROM runs WHERE category = ?",
                                          (c.id,)).fetchone()[0]
-            cats.append({"id": c.id, "name": c.name, "desc": c.desc, "players": players, "wr": records.get(c.id)})
+            cats.append({"id": c.id, "name": c.name, "desc": c.desc, "players": players, "wr": records.get(c.id),
+                         "def": category_def(c)})  # (the rules, for games that don't make them themselves)
         return web.json_response({"week": week, "left": time_left(week), "categories": cats})
 
     async def battlepass(self, request: web.Request) -> web.Response:
@@ -1326,15 +1642,14 @@ class Server:
     async def websocket(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=20)
         await ws.prepare(request)
+        # (newer games log in with an "auth" message instead of ?token=, which ends up in web server logs)
         user = self.db.user_for(request.query.get("token"))
         guest = re.sub(r"[^A-Za-z0-9_ -]", "", request.query.get("name", ""))[:16].strip()
         name = user["name"] if user else (guest or f"Guest{random.randint(100, 999)}")
-        player = Player(ws, self.new_pid(), name, user["id"] if user else None)
+        player = Player(ws, self.new_pid(), name, None)
         if user:
-            row = self.db.user_by_id(user["id"])
-            player.rank, player.avatar = cos.rank_for(row["rp"])[1], row["avatar"] or cos.DEFAULT_AVATAR
-            self.connected.setdefault(user["id"], set()).add(player)
-        await ws.send_str(json.dumps({"t": "welcome", "id": player.id, "name": name, "account": bool(user)}))
+            self.sign_in(player, user)
+        await ws.send_str(json.dumps({"t": "welcome", "id": player.id, "name": player.name, "account": bool(user)}))
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -1354,10 +1669,23 @@ class Server:
                     self.connected.pop(player.user_id, None)
         return ws
 
+    def sign_in(self, player: Player, user: sqlite3.Row) -> None:
+        row = self.db.user_by_id(user["id"])
+        player.user_id, player.name = user["id"], user["name"]
+        player.rank, player.avatar = cos.rank_for(row["rp"])[1], row["avatar"] or cos.DEFAULT_AVATAR
+        self.connected.setdefault(user["id"], set()).add(player)
+
     async def on_message(self, p: Player, m: dict) -> None:
         t = m.get("t")
         room = p.room
         err = None
+        if t == "auth":  # log this connection in (only before joining a match)
+            user = self.db.user_for(str(m.get("token", "")))
+            if user and p.user_id is None and not room:
+                self.sign_in(p, user)
+            await p.ws.send_str(json.dumps({"t": "welcome", "id": p.id, "name": p.name,
+                                            "account": p.user_id is not None}))
+            return
         if t == "ping":  # lets players see their round-trip time
             await p.ws.send_str(json.dumps({"t": "pong", "at": m.get("at")}))
             return
@@ -1486,6 +1814,8 @@ def main(argv=None) -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--web", type=Path, default=DEFAULT_WEB, help="folder with the built web game")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA, help="folder for accounts and records")
+    parser.add_argument("--rs", type=Path, default=DEFAULT_RS,
+                        help="folder with the Rust game's web build (served at /rs/)")
     parser.add_argument("--restart-week", action="store_true",
                         help="start this week over (new weekly speedruns, a fresh battle pass), then exit")
     args = parser.parse_args(argv)
@@ -1494,10 +1824,12 @@ def main(argv=None) -> None:
         print(f"This week is now {db.restart_week()}: new weekly speedruns and a fresh battle pass until Monday.")
         db.close()
         return
-    server = Server(args.data, args.web)
+    server = Server(args.data, args.web, args.rs)
     print(f"OpenSnake server {__version__}")
     print(f"  data:     {args.data}")
     print(f"  web game: {server.web_dir or 'not built (run web-support/build.sh); API only'}")
+    if server.rs_dir:
+        print(f"  Rust game: {server.rs_dir} (at /rs/)")
     if stale_build(server.web_dir):
         print("  WARNING: the game code is newer than the web game build, so the website still runs the "
               "old version. Rebuild it: web-support/build.sh (or web-support/update.sh)")

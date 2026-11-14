@@ -79,6 +79,31 @@ def next_rank(rp: int) -> tuple[str, int] | None:
     return name, lo
 
 
+# Rewards for reaching a rank for the first time (by rank index). Each rank pays
+# once per account: dropping a rank and climbing back up again pays nothing.
+RANK_REWARDS = {
+    1: [("points", 10_000), ("item", "skin:rk_garter")],
+    2: [("points", 25_000), ("crate", "gold"), ("item", "skin:rk_rattler")],
+    3: [("points", 50_000), ("crate", "diamond"), ("item", "skin:rk_cobra")],
+    4: [("points", 100_000), ("crate", "diamond"), ("item", "skin:rk_viper")],
+    5: [("points", 200_000), ("crate", "royal"), ("item", "skin:rk_python")],
+    6: [("points", 350_000), ("crate", "royal"), ("item", "skin:rk_anaconda")],
+    7: [("points", 500_000), ("crate", "royal"), ("crate", "royal"), ("item", "skin:rk_basilisk")],
+}
+
+
+def rank_reward_names(index: int) -> list[str]:
+    out = []
+    for kind, value in RANK_REWARDS.get(index, []):
+        if kind == "points":
+            out.append(f"{value:,} snake points")
+        elif kind == "crate":
+            out.append(CRATE_BY_ID[value].name)
+        else:
+            out.append(item_name(value))
+    return out
+
+
 # ---- the battle pass -----------------------------------------------------------------
 #
 # A new pass every week (Monday to Monday, UTC; see weeks.py). Everyone earns XP by
@@ -88,8 +113,7 @@ def next_rank(rp: int) -> tuple[str, int] | None:
 
 PASS_PRICE = 10_000
 PASS_LEVELS = 100       # the reward track's length
-LEVEL_XP = 300          # XP per level
-DAILY_LEVELS = 20       # the most levels you can gain in a day (UTC), so level 100 takes 5 days
+LEVEL_XP = 1_200        # XP per level: level 100 is 120,000 XP, a few days of solid play
 XP_SPEEDRUN = 150       # finishing a speedrun (on top of the snake points it earns as XP)
 XP_WEEKLY = 300         # finishing one of the week's speedruns
 XP_PB = 300             # a new personal best
@@ -145,22 +169,20 @@ def pass_level(xp: int) -> int:
 # earned, not your balance, so spending them doesn't lower your score.
 
 SCORE_PARTS = [  # (key, label, most points)
-    ("wrs", "World records", 30),
-    ("prs", "PRs", 25),
-    ("earned", "Snake points earned", 25),
-    ("skins", "Skins", 20),
+    ("wrs", "World records", 35),
+    ("prs", "PRs", 35),
+    ("earned", "Snake points earned", 30),
 ]
 FULL_WRS = 5                 # world records held for full marks
 FULL_EARNED = 1_000_000      # snake points earned for full marks (each point counts a bit less than the last)
 
 
-def player_score(wrs: int, prs: int, categories: int, earned: int, skins: int) -> dict:
+def player_score(wrs: int, prs: int, categories: int, earned: int) -> dict:
     """A player's score out of 100 and what each part gave: {"score": .., "parts": {key: points}}."""
     fractions = {
         "wrs": min(1.0, wrs / FULL_WRS),
         "prs": min(1.0, prs / max(1, categories)),
         "earned": min(1.0, (max(0, earned) / FULL_EARNED) ** (1 / 3)),
-        "skins": min(1.0, skins / len(SKINS)),
     }
     parts = {key: round(fractions[key] * most, 1) for key, _label, most in SCORE_PARTS}
     return {"score": round(sum(parts.values()), 1), "parts": parts}
@@ -173,9 +195,7 @@ RARITY_NAMES = {"common": "Common", "uncommon": "Uncommon", "rare": "Rare", "epi
                 "legendary": "Legendary", "mythic": "Mythic"}
 RARITY_COLORS = {"common": (176, 186, 190), "uncommon": (76, 175, 80), "rare": (33, 150, 243),
                  "epic": (163, 64, 214), "legendary": (255, 176, 0), "mythic": (240, 60, 60)}
-# Points back for a loot box item you already own.
-DUPLICATE_REFUND = {"common": 200, "uncommon": 600, "rare": 2_500, "epic": 8_000,
-                    "legendary": 25_000, "mythic": 60_000}
+# Getting an item you already own gives you another copy, to keep or sell on the market.
 
 
 # ---- skins -------------------------------------------------------------------------
@@ -185,7 +205,9 @@ class Skin:
     id: str
     name: str
     rarity: str
-    pattern: str            # grad / stripes / rainbow / flow / pulse / shimmer
+    pattern: str            # grad / stripes / rainbow / flow / pulse / shimmer, and the pass and ranked
+                            # only ones: aurora / lava / galaxy / circuit / prism / heartbeat / chevron /
+                            # scales / spark
     colors: tuple           # the pattern's colours (head first)
     outline: tuple | None = None
     glow: bool = False      # the outline pulses
@@ -350,6 +372,44 @@ SKINS = [
     _skin("oblivion", "Oblivion", "mythic", "pulse", ["#050505", "#d0102a"], "#ff6b7a", glow=True, series="Pass"),
     _skin("starfall", "Starfall", "mythic", "flow", ["#0b1238", "#ffffff", "#ffd54f", "#ffffff"], "#ffffff",
           glow=True, series="Pass"),
+    # ...with their own animated patterns that nothing else has
+    _skin("borealis", "Borealis", "legendary", "aurora", ["#062a2a", "#19e3a0", "#4f8cff", "#c86bff"], "#b8ffe6",
+          glow=True, series="Pass"),
+    _skin("magma", "Magma", "legendary", "lava", ["#1a0a06", "#ff4d00", "#ffd84a"], "#ff7a1a", glow=True,
+          series="Pass"),
+    _skin("motherboard", "Motherboard", "legendary", "circuit", ["#06210f", "#11502a", "#5dff9c"], "#5dff9c",
+          glow=True, series="Pass"),
+    _skin("lifeline", "Lifeline", "legendary", "heartbeat", ["#2a0510", "#ff2d55"], "#ff8fa6", glow=True,
+          series="Pass"),
+    _skin("milkyway", "Milky Way", "legendary", "galaxy", ["#0a0a24", "#3a1f6e", "#ffffff"], "#c8b8ff", glow=True,
+          series="Pass"),
+    _skin("spectrum", "Spectrum", "legendary", "prism", ["#ffffff"], "#ffffff", glow=True, series="Pass"),
+    _skin("cosmos", "Cosmos", "mythic", "galaxy", ["#05000f", "#5a12a8", "#ffe28a"], "#ffe28a", glow=True,
+          series="Pass"),
+    _skin("eruption", "Eruption", "mythic", "lava", ["#120202", "#ff1e00", "#fff3b0"], "#ffd84a", glow=True,
+          series="Pass"),
+    _skin("mainframe", "Mainframe", "mythic", "circuit", ["#020812", "#0a2a5e", "#00e5ff"], "#7af6ff", glow=True,
+          series="Pass"),
+    _skin("polarnight", "Polar Night", "mythic", "aurora", ["#020612", "#00ffb3", "#ff3df0", "#4fd2ff"],
+          "#ffffff", glow=True, series="Pass"),
+    _skin("diamondheart", "Diamond Heart", "mythic", "heartbeat", ["#0a1a2e", "#9ff3ff"], "#ffffff", glow=True,
+          series="Pass"),
+    _skin("hypercolor", "Hypercolor", "mythic", "prism", ["#000000"], "#ffd54f", glow=True, series="Pass"),
+
+    # Ranked only: one for reaching each rank (see RANK_REWARDS). Can't be bought, rolled or traded.
+    _skin("rk_garter", "Garter Stripe", "uncommon", "chevron", ["#3f8f2e", "#a6e07a"], "#1f4f14",
+          series="Ranked"),
+    _skin("rk_rattler", "Rattler", "rare", "scales", ["#8a5a24", "#e8b870"], "#4a2e0e", series="Ranked"),
+    _skin("rk_cobra", "Cobra Hood", "epic", "chevron", ["#0d3b6e", "#3cb4ff"], "#bfe8ff", glow=True,
+          series="Ranked"),
+    _skin("rk_viper", "Viper Strike", "epic", "spark", ["#2a0f4f", "#9a5bff", "#ffffff"], "#d2b8ff", glow=True,
+          series="Ranked"),
+    _skin("rk_python", "Python Crown", "legendary", "scales", ["#7a3a06", "#ffa53a"], "#ffe0a8", glow=True,
+          series="Ranked"),
+    _skin("rk_anaconda", "Anaconda Fang", "legendary", "spark", ["#3a0208", "#ff2a3d", "#ffd27a"], "#ff8a95",
+          glow=True, series="Ranked"),
+    _skin("rk_basilisk", "Basilisk Gaze", "mythic", "chevron", ["#1a1400", "#ffcc00"], "#fff3b0", glow=True,
+          series="Ranked"),
 ]
 SKIN_BY_ID = {s.id: s for s in SKINS}
 
@@ -388,7 +448,50 @@ def skin_color(skin: Skin, i: int, n: int, now: float) -> tuple:
     if skin.pattern == "shimmer":
         band = (now / 90) % (n + 8) - 4  # a bright band running down the body
         return _lerp(c[0], c[1], max(0.0, 1 - abs(i - band) / 2.5))
+    # -- the battle pass and ranked patterns
+    if skin.pattern == "aurora":  # slow curtains of colour drifting both ways over a dark body
+        wave = 0.5 + 0.25 * math.sin(i * 0.45 - now / 700) + 0.25 * math.sin(i * 0.17 + now / 1100)
+        return _lerp(c[0], _cycle(c[1:], i * 0.04 + now / 4000), 0.25 + 0.75 * wave)
+    if skin.pattern == "lava":  # dark crust with glowing cracks that ooze along
+        heat = max(0.0, math.sin(i * 1.7 + now / 450) * math.sin(i * 0.6 - now / 800))
+        flare = _hash01(i, int(now // 160)) > 0.93
+        return _lerp(_lerp(c[0], c[1], heat * 1.6), c[2], 1.0 if flare else max(0.0, heat - 0.55) * 2)
+    if skin.pattern == "galaxy":  # deep space with twinkling stars
+        base = _lerp(c[0], c[1], 0.5 + 0.5 * math.sin(i * 0.3 - now / 1500))
+        star = _hash01(i, int(now // 220))
+        return _lerp(base, c[2], max(0.0, star - 0.82) / 0.18)
+    if skin.pattern == "circuit":  # data packets racing from head to tail along lit traces
+        trace = c[1] if i % 3 else c[0]
+        packet = (now / 70) % (n + 6) - 3
+        return _lerp(trace, c[2], max(0.0, 1 - abs(i - packet) / 1.5) + (0.35 if i % 6 == 0 else 0.0))
+    if skin.pattern == "prism":  # split light: a fast rainbow with white flashes
+        hue = (i * 0.11 + now / 900) % 1.0
+        r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+        col = (round(r * 255), round(g * 255), round(b * 255))
+        flash = max(0.0, math.sin(now / 160 - i * 0.9)) ** 8
+        return _lerp(_lerp(col, c[0], 0.25), (255, 255, 255), flash)
+    if skin.pattern == "heartbeat":  # a double beat travelling down from the head
+        t = (now / 1000) % 1.0
+        beat = max(0.0, 1 - abs(i - t * 18) / 2) + max(0.0, 1 - abs(i - (t - 0.18) * 18) / 2) * 0.7
+        return _lerp(c[0], c[1], min(1.0, 0.25 + beat))
+    if skin.pattern == "chevron":  # arrowhead bands marching towards the head
+        phase = (i + now / 180) % 4
+        return c[1] if phase < 1.6 else _lerp(c[0], c[1], 0.15)
+    if skin.pattern == "scales":  # alternating scales with a gleam sliding along them
+        base = c[1] if i % 2 else c[0]
+        gleam = max(0.0, 1 - abs(i - (now / 110) % (n + 10) + 5) / 3)
+        return _lerp(base, (255, 255, 255), 0.6 * gleam)
+    if skin.pattern == "spark":  # crackling sparks over a dark body
+        base = _lerp(c[0], c[1], 0.3 + 0.3 * math.sin(i * 0.8 + now / 300))
+        return _lerp(base, c[2], 1.0 if _hash01(i, int(now // 90)) > 0.88 else 0.0)
     return c[0]
+
+
+def _hash01(i: int, j: int) -> float:
+    """A repeatable pseudo-random number in [0, 1) for a cell and a time step."""
+    h = (i * 374761393 + j * 668265263) & 0xFFFFFFFF
+    h = ((h ^ (h >> 13)) * 1274126177) & 0xFFFFFFFF
+    return (h ^ (h >> 16)) / 2 ** 32
 
 
 def skin_outline(skin: Skin, now: float) -> tuple | None:
@@ -502,11 +605,65 @@ CRATE_BY_ID = {c.id: c for c in CRATES}
 
 
 PASS_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Pass"}
+RANKED_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Ranked"}
+UNTRADEABLE = RANKED_ONLY  # earned by climbing the ranks, so they can't be sold
 
 
 def items_of(rarity: str) -> list[str]:
-    """Everything of a rarity that loot boxes can give (not the battle-pass-only skins)."""
-    return [it for it in ALL_ITEMS if item_rarity(it) == rarity and it not in PASS_ONLY]
+    """Everything of a rarity that loot boxes can give (not the battle pass or ranked skins)."""
+    return [it for it in ALL_ITEMS if item_rarity(it) == rarity and it not in PASS_ONLY | RANKED_ONLY]
+
+
+# ---- the player market ----------------------------------------------------------------
+
+MARKET_FEE = 0.05            # taken from the price when something sells (those points are gone)
+MARKET_MIN_PRICE = 100
+MARKET_MAX_PRICE = 10_000_000
+MARKET_MAX_LISTINGS = 20     # per player at once
+
+
+def market_fee(price: int) -> int:
+    return int(price * MARKET_FEE + 0.5)
+
+
+# ---- daily challenges -----------------------------------------------------------------
+#
+# Three a day (UTC), the same for everyone: an easy, a medium and a hard one.
+
+@dataclass(frozen=True)
+class Challenge:
+    kind: str     # what counts: fruit / rounds / matches / wins / speedruns / pbs / weekly
+    goal: int
+    reward: int
+    text: str     # with {n} for the goal
+
+
+CHALLENGES = {  # difficulty -> the ones it picks from
+    "easy": [Challenge("fruit", 40, 5_000, "Eat {n} fruit in single-player rounds"),
+             Challenge("rounds", 5, 5_000, "Finish {n} single-player rounds"),
+             Challenge("speedruns", 2, 5_000, "Finish {n} speedruns"),
+             Challenge("matches", 2, 5_000, "Play {n} online versus matches")],
+    "medium": [Challenge("fruit", 150, 15_000, "Eat {n} fruit in single-player rounds"),
+               Challenge("wins", 2, 15_000, "Win {n} online versus matches"),
+               Challenge("weekly", 2, 15_000, "Finish {n} of this week's speedruns"),
+               Challenge("speedruns", 6, 15_000, "Finish {n} speedruns")],
+    "hard": [Challenge("pbs", 2, 40_000, "Set {n} new personal bests"),
+             Challenge("wins", 5, 40_000, "Win {n} online versus matches"),
+             Challenge("fruit", 400, 40_000, "Eat {n} fruit in single-player rounds"),
+             Challenge("weekly", 5, 40_000, "Finish {n} of this week's speedruns")],
+}
+DAILY_BONUS = 20_000  # for finishing all three
+
+
+def daily_challenges(day: str) -> list[dict]:
+    """The day's three challenges ("2026-11-13"): [{"id", "kind", "goal", "reward", "text"}]."""
+    rng = random.Random(f"opensnake daily {day}")
+    out = []
+    for n, difficulty in enumerate(("easy", "medium", "hard")):
+        ch = rng.choice(CHALLENGES[difficulty])
+        out.append({"id": n, "difficulty": difficulty, "kind": ch.kind, "goal": ch.goal, "reward": ch.reward,
+                    "text": ch.text.format(n=ch.goal)})
+    return out
 
 
 def roll(crate: Crate, rng=random) -> str:

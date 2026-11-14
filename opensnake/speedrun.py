@@ -330,6 +330,9 @@ class Run:
         }
 
 
+MAX_RUN_MS = 3 * 3600 * 1000  # the longest run the server will check
+
+
 def replay(data: dict, max_ticks: int = 2_000_000) -> Run:
     """Re-run a saved run from its seed and inputs."""
     category = find_category(str(data["category"]), data)
@@ -352,14 +355,21 @@ def verify(data: dict) -> tuple[bool, str]:
     if data.get("game") != "opensnake" or data.get("format") != RUN_FORMAT:
         return False, "not an OpenSnake run file (or an unsupported format)"
     try:
-        find_category(str(data.get("category")), data)
+        category = find_category(str(data.get("category")), data)
     except (KeyError, TypeError, ValueError) as e:
         return False, str(e).strip("'\"")
+    claimed = data.get("time_ms")
+    max_ticks = 2_000_000
+    if claimed is not None:
+        # Replay no further than the claimed time allows, so a run that never ends can't keep
+        # a server busy for minutes.
+        if not isinstance(claimed, int) or isinstance(claimed, bool) or not 0 < claimed <= MAX_RUN_MS:
+            return False, "the claimed time is missing or too long"
+        max_ticks = int(claimed / max(1.0, category.min_tick_ms)) + 2
     try:
-        run = replay(data)
+        run = replay(data, max_ticks)
     except (KeyError, TypeError, ValueError) as e:
         return False, f"malformed run file: {e}"
-    claimed = data.get("time_ms")
     name = run.category.name
     if not run.finished:
         return False, f"{name}: the replay does not finish the category"

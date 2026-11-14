@@ -208,7 +208,7 @@ class Hub:
             else:
                 got = cos.item_name(r.data["item"])
                 self.on.toast(f"Got {got}!" if r.data.get("new") else
-                              f"Already had {got}: +{cos.format_points(r.data.get('refund', 0))} snake points", GOOD)
+                              f"Got another {got} (you have {r.data.get('copies', 2)})", GOOD)
                 self.app.sfx.play("win")
                 self.on.refresh_me()
         self.on.request("POST", "/api/battlepass/claim", {"level": level}, then=done)
@@ -817,9 +817,8 @@ class Hub:
         pygame.draw.rect(scr, (230, 233, 226), bar, border_radius=7)
         frac = info["into_level"] / max(1, info["level_xp"])
         pygame.draw.rect(scr, ACCENT, (bar.x, bar.y, max(14, int(bar.w * frac)), bar.h), border_radius=7)
-        self.text(f"{info['into_level']} / {info['level_xp']} XP to level {level + 1}   ·   today "
-                  f"{info.get('day_xp', 0):,} / {info.get('day_limit', 0):,} XP (up to {cos.DAILY_LEVELS} levels a day,"
-                  f" new day in {info.get('day_resets', '?')})", ph * 0.022, MUTED, topleft=(x, bar.bottom + 6))
+        self.text(f"{info['into_level']:,} / {info['level_xp']:,} XP to level {level + 1}", ph * 0.022, MUTED,
+                  topleft=(x, bar.bottom + 6))
         self.text(f"Week {info['week']}   ·   ends in {info['left']}   ·   levels past {info['max']} carry over "
                   "to next week", ph * 0.022, MUTED, topleft=(x, bar.bottom + 6 + ph * 0.03))
         # buy / owned
@@ -907,12 +906,12 @@ class Hub:
         y = top + ph * 0.04
         players = data.get("players", [])
         if not players:
-            self.text("Nobody has a score yet. Play speedruns, set records and collect skins!", ph * 0.028, MUTED,
+            self.text("Nobody has a score yet. Play speedruns, set records and earn snake points!", ph * 0.028, MUTED,
                       center=(p.centerx, (top + bottom) // 2))
             return
         # columns: place, player, score bar, then each part's raw number
         cols = [("#", 0.0), ("Player", 0.06), ("Score", 0.36), ("WRs", 0.62), ("PRs", 0.71),
-                ("Points earned", 0.79), ("Skins", 0.93)]
+                ("Points earned", 0.79)]
         for label, fx in cols:
             self.text(label, ph * 0.024, MUTED, topleft=(x + w * fx, y))
         y += ph * 0.038
@@ -952,7 +951,7 @@ class Hub:
                     pygame.draw.rect(scr, colors.get(pt["key"], ACCENT), (bx, bar.y, seg, bar.h))
                     bx += seg
             self.text(f"{entry['score']:.1f}", row * 0.42, INK, midleft=(bar.right + 10, r.centery))
-            for key, fx in (("wrs", 0.62), ("prs", 0.71), ("earned", 0.79), ("skins", 0.93)):
+            for key, fx in (("wrs", 0.62), ("prs", 0.71), ("earned", 0.79)):
                 value = cos.format_points(entry[key]) if key == "earned" else str(entry[key])
                 self.text(value, row * 0.36, INK, midleft=(x + w * fx, r.centery))
             y += row + 4
@@ -1384,7 +1383,7 @@ class Hub:
             b = pygame.Rect(r.x + 10, r.bottom - int(fs * 2.4) - 10, r.w - 20, int(fs * 2.4))
             self.button(b, f"Open  {cos.format_points(crate.price)}", lambda c=crate: self.open_crate(c), True,
                         points >= crate.price and not self.busy)
-        self.text("Loot boxes hold skins and texture packs. Duplicates turn back into snake points.",
+        self.text("Loot boxes hold skins and texture packs. Duplicates are extra copies you can sell.",
                   area.h * 0.035 + 6, MUTED, midtop=(area.centerx, area.y + ch + 10))
 
     def draw_opening(self, area, now) -> None:
@@ -1438,7 +1437,7 @@ class Hub:
                       midtop=(area.centerx, y))
             y += area.h * 0.09
             note = "New! It's in your Collection." if res.get("new") else \
-                f"You already had it: +{cos.format_points(res.get('refund', 0))} snake points back."
+                f"Another copy: you have {res.get('copies', 2)} now. Sell spares on the market."
             self.text(note, area.h * 0.045, INK, midtop=(area.centerx, y))
             b = pygame.Rect(0, 0, int(area.w * 0.25), max(34, int(area.h * 0.09)))
             b.midtop = (area.centerx, y + area.h * 0.07)
