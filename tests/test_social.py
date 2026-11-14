@@ -813,24 +813,44 @@ class RunCheckTests(ServerTestCase):
 
 
 class RustGameTests(ServerTestCase):
-    async def test_the_rust_web_build_is_served_at_rs(self):
+    async def test_the_rust_game_is_at_the_root_and_the_python_one_at_py(self):
         from pathlib import Path
         from aiohttp.test_utils import TestClient, TestServer
         from opensnake.server import Server
-        rs = Path(self.tmp.name) / "rs"
-        rs.mkdir()
-        (rs / "index.html").write_text("<html>rust</html>")
+        rs, py = Path(self.tmp.name) / "rs", Path(self.tmp.name) / "py"
+        for d, name in ((rs, "rust"), (py, "python")):
+            d.mkdir()
+            (d / "index.html").write_text(f"<html>{name}</html>")
         (rs / "opensnake.wasm").write_bytes(b"\0asm")
-        server = Server(Path(self.tmp.name) / "b", None, rs)
+        (py / "opensnake-abc.apk").write_bytes(b"apk")
+        server = Server(Path(self.tmp.name) / "b", py, rs)
         client = TestClient(TestServer(server.app()))
         await client.start_server()
         try:
-            r = await client.get("/rs/")
+            r = await client.get("/")
             self.assertEqual((r.status, await r.text()), (200, "<html>rust</html>"))
-            r = await client.get("/rs/opensnake.wasm")
-            self.assertEqual(r.status, 200)
-            r = await client.get("/rs", allow_redirects=False)
-            self.assertEqual((r.status, r.headers["Location"]), (302, "/rs/"))
+            self.assertEqual((await client.get("/opensnake.wasm")).status, 200)
+            r = await client.get("/py/")
+            self.assertEqual((r.status, await r.text()), (200, "<html>python</html>"))
+            self.assertEqual((await client.get("/py/opensnake-abc.apk")).status, 200)
+            for old, new in (("/py", "/py/"), ("/rs/", "/"), ("/rs", "/")):
+                r = await client.get(old, allow_redirects=False)
+                self.assertEqual((r.status, r.headers["Location"]), (302, new))
             self.assertEqual((await client.get("/api/info")).status, 200)
+        finally:
+            await client.close()
+
+    async def test_without_the_rust_game_the_python_one_stays_at_the_root(self):
+        from pathlib import Path
+        from aiohttp.test_utils import TestClient, TestServer
+        from opensnake.server import Server
+        py = Path(self.tmp.name) / "py"
+        py.mkdir()
+        (py / "index.html").write_text("<html>python</html>")
+        server = Server(Path(self.tmp.name) / "c", py, Path(self.tmp.name) / "nothing")
+        client = TestClient(TestServer(server.app()))
+        await client.start_server()
+        try:
+            self.assertEqual(await (await client.get("/")).text(), "<html>python</html>")
         finally:
             await client.close()

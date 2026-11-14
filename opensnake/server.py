@@ -1090,7 +1090,7 @@ class Server:
     def __init__(self, data_dir: Path, web_dir: Path | None, rs_dir: Path | None = None):
         self.db = Database(data_dir / "opensnake.db")
         self.web_dir = web_dir if web_dir and (web_dir / "index.html").is_file() else None
-        # The Rust version of the game (OpenSnake in Rust), served at /rs/ when it's there
+        # The Rust version of the game (OpenSnake in Rust): the main game at / when it's there
         self.rs_dir = rs_dir if rs_dir and (rs_dir / "index.html").is_file() else None
         self.rooms: dict[str, Room] = {}
         self.next_pid = 1
@@ -1176,11 +1176,19 @@ class Server:
         r.add_get("/api/messages/{name}", self.conversation)
         r.add_post("/api/messages", self.send_message)
         r.add_get("/ws", self.websocket)
-        if self.rs_dir:  # (before the main game's "/", which would catch /rs/ too)
-            r.add_get("/rs", self.rs_redirect)
-            r.add_get("/rs/", self.rs_index)
-            r.add_static("/rs/", self.rs_dir)
-        if self.web_dir:
+        # With the Rust version built, it's the main game at / and the Python (pygame)
+        # game moves to /py/; without it, the Python game stays at /. (Folders go
+        # before "/", which would catch them too.)
+        if self.rs_dir:
+            r.add_get("/rs", self.to_root)  # (where the Rust game used to be)
+            r.add_get("/rs/", self.to_root)
+            if self.web_dir:
+                r.add_get("/py", self.to_py)
+                r.add_get("/py/", self.index)
+                r.add_static("/py/", self.web_dir)
+            r.add_get("/", self.rs_index)
+            r.add_static("/", self.rs_dir)
+        elif self.web_dir:
             r.add_get("/", self.index)
             r.add_static("/", self.web_dir)
         return app
@@ -1217,8 +1225,12 @@ class Server:
         return web.FileResponse(self.rs_dir / "index.html", headers={"Cache-Control": "no-store"})
 
     @staticmethod
-    async def rs_redirect(request: web.Request) -> web.StreamResponse:
-        raise web.HTTPFound("/rs/")
+    async def to_root(request: web.Request) -> web.StreamResponse:
+        raise web.HTTPFound("/")
+
+    @staticmethod
+    async def to_py(request: web.Request) -> web.StreamResponse:
+        raise web.HTTPFound("/py/")  # (its files are relative to the folder)
 
     # -- accounts
     async def info(self, request: web.Request) -> web.Response:
@@ -1815,7 +1827,7 @@ def main(argv=None) -> None:
     parser.add_argument("--web", type=Path, default=DEFAULT_WEB, help="folder with the built web game")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA, help="folder for accounts and records")
     parser.add_argument("--rs", type=Path, default=DEFAULT_RS,
-                        help="folder with the Rust game's web build (served at /rs/)")
+                        help="folder with the Rust game's web build (served at /, moving the Python game to /py/)")
     parser.add_argument("--restart-week", action="store_true",
                         help="start this week over (new weekly speedruns, a fresh battle pass), then exit")
     args = parser.parse_args(argv)
@@ -1829,7 +1841,7 @@ def main(argv=None) -> None:
     print(f"  data:     {args.data}")
     print(f"  web game: {server.web_dir or 'not built (run web-support/build.sh); API only'}")
     if server.rs_dir:
-        print(f"  Rust game: {server.rs_dir} (at /rs/)")
+        print(f"  Rust game: {server.rs_dir} (at /; the Python game is at /py/)")
     if stale_build(server.web_dir):
         print("  WARNING: the game code is newer than the web game build, so the website still runs the "
               "old version. Rebuild it: web-support/build.sh (or web-support/update.sh)")
