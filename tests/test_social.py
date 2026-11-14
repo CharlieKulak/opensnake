@@ -854,3 +854,34 @@ class RustGameTests(ServerTestCase):
             self.assertEqual(await (await client.get("/")).text(), "<html>python</html>")
         finally:
             await client.close()
+
+
+class CommunityVoteTests(ServerTestCase):
+    async def test_upvotes_search_and_sorting(self):
+        a, b, c = await self.account("alice"), await self.account("bobby"), await self.account("carol")
+        portal = make_custom(10, 9, ["portal"], 3, 1, 130, name="Portal Party")
+        walls = make_custom(10, 9, ["wall"], 3, 1, 130, name="Brick Run")
+        await self.post("/api/runs", bot_run(portal, 4, random.Random(3)).to_json(), a)   # alice made it
+        await self.post("/api/runs", bot_run(walls, 4, random.Random(3)).to_json(), b)    # bobby made this one
+        await self.post("/api/runs", bot_run(walls, 5, random.Random(5)).to_json(), c)
+        # you can't upvote your own, but others can (once each)
+        self.assertIn("own", (await self.post("/api/categories/vote", {"id": portal.id}, a))[1]["error"])
+        r = (await self.post("/api/categories/vote", {"id": portal.id}, b))[1]
+        self.assertEqual((r["votes"], r["voted"]), (1, True))
+        await self.post("/api/categories/vote", {"id": portal.id}, b)
+        r = (await self.post("/api/categories/vote", {"id": portal.id}, c))[1]
+        self.assertEqual(r["votes"], 2)
+        self.assertEqual((await self.post("/api/categories/vote", {"id": "custom-nope"}, c))[0], 404)
+        # top: most upvoted first; popular: most players first
+        top = (await self.get("/api/categories", c))[1]["categories"]
+        self.assertEqual([x["name"] for x in top], ["Portal Party", "Brick Run"])
+        self.assertEqual((top[0]["votes"], top[0]["voted"], top[0]["mine"]), (2, True, False))
+        popular = (await self.get("/api/categories?sort=popular"))[1]["categories"]
+        self.assertEqual([x["name"] for x in popular], ["Brick Run", "Portal Party"])
+        # search by name, creator or mode
+        for q, want in (("brick", ["Brick Run"]), ("alice", ["Portal Party"]), ("wall", ["Brick Run"]), ("zzz", [])):
+            got = (await self.get(f"/api/categories?q={q}"))[1]["categories"]
+            self.assertEqual([x["name"] for x in got], want, q)
+        # taking an upvote back
+        r = (await self.post("/api/categories/vote", {"id": portal.id, "up": False}, c))[1]
+        self.assertEqual((r["votes"], r["voted"]), (1, False))

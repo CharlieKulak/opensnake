@@ -29,7 +29,8 @@ HTTP API (JSON):
     GET  /api/daily                              -> today's three challenges and your progress
     POST /api/daily/claim     {id} (0-2 or "bonus") -> claim a finished challenge's snake points
     POST /api/rounds          {fruit}            -> snake points for a finished round
-    GET  /api/categories?q=                      -> community custom speedrun categories
+    GET  /api/categories?q=&sort=top|popular|new -> community custom speedrun categories (search, sort)
+    POST /api/categories/vote    {id, up}        -> upvote a community category (up: false takes it back)
     POST /api/categories      {def}              -> share a custom category
     POST /api/categories/rename  {id, name}      -> rename a category you made
     GET  /api/rankings                           -> the community leaderboard: scores out of 100
@@ -142,6 +143,9 @@ class Database:
             CREATE TABLE IF NOT EXISTS categories (
                 id TEXT PRIMARY KEY, def TEXT NOT NULL, name TEXT NOT NULL, creator INTEGER NOT NULL,
                 created TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS category_votes (
+                category TEXT NOT NULL, user_id INTEGER NOT NULL, created TEXT NOT NULL,
+                PRIMARY KEY (category, user_id));
             CREATE TABLE IF NOT EXISTS wr_hold (
                 category TEXT PRIMARY KEY, user_id INTEGER NOT NULL, since TEXT NOT NULL, paid INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS messages (
@@ -844,22 +848,53 @@ class Database:
         self.db.commit()
         return clean
 
-    def community(self, query: str = "", limit: int = 100) -> list[dict]:
+    def community(self, query: str = "", limit: int = 100, sort: str = "top", me: int | None = None) -> list[dict]:
+        """Community categories, searched by name, creator or mode, sorted by upvotes
+        ("top"), players ("popular") or newest first ("new")."""
         rows = self.db.execute("""
             SELECT categories.*, users.name AS creator_name,
-                   (SELECT COUNT(DISTINCT user_id) FROM runs WHERE runs.category = categories.id) AS players
-            FROM categories JOIN users ON users.id = categories.creator""").fetchall()
+                   (SELECT COUNT(DISTINCT user_id) FROM runs WHERE runs.category = categories.id) AS players,
+                   (SELECT COUNT(*) FROM category_votes v WHERE v.category = categories.id) AS votes,
+                   EXISTS (SELECT 1 FROM category_votes v WHERE v.category = categories.id AND v.user_id = ?) AS voted
+            FROM categories JOIN users ON users.id = categories.creator""", (me or -1,)).fetchall()
         words = query.lower().split()
         out = []
         for r in rows:
-            text = f"{r['name']} {r['creator_name']}".lower()
+            definition = json.loads(r["def"])
+            modes = " ".join(str(m) for m in definition.get("modes", []))
+            text = f"{r['name']} {r['creator_name']} {modes}".lower()
             if not all(w in text for w in words):
                 continue
-            best = self.leaderboard(r["id"], 1)
-            out.append({"id": r["id"], "name": r["name"], "def": json.loads(r["def"]), "creator": r["creator_name"],
-                        "created": r["created"][:10], "players": r["players"], "wr": best[0] if best else None})
-        out.sort(key=lambda c: (-c["players"], c["name"].lower()))
-        return out[:limit]
+            out.append({"id": r["id"], "name": r["name"], "def": definition, "creator": r["creator_name"],
+                        "created": r["created"][:10], "players": r["players"], "votes": r["votes"],
+                        "voted": bool(r["voted"]), "mine": r["creator"] == me, "_created": r["created"]})
+        keys = {"popular": lambda c: (-c["players"], -c["votes"], c["name"].lower()),
+                "new": lambda c: (c["_created"],)}
+        if sort == "new":
+            out.sort(key=keys["new"], reverse=True)
+        else:
+            out.sort(key=keys.get(sort, lambda c: (-c["votes"], -c["players"], c["name"].lower())))
+        out = out[:limit]
+        for c in out:
+            del c["_created"]
+            best = self.leaderboard(c["id"], 1)
+            c["wr"] = best[0] if best else None
+        return out
+
+    def vote_category(self, category_id: str, user_id: int, up: bool) -> dict:
+        """Upvote a community category (or take the upvote back): one vote per player."""
+        row = self.db.execute("SELECT creator FROM categories WHERE id = ?", (category_id,)).fetchone()
+        if not row:
+            raise LookupError("No community category with that id.")
+        if row["creator"] == user_id:
+            raise ValueError("You can't upvote your own category.")
+        if up:
+            self.db.execute("INSERT OR IGNORE INTO category_votes VALUES (?, ?, ?)", (category_id, user_id, now_iso()))
+        else:
+            self.db.execute("DELETE FROM category_votes WHERE category = ? AND user_id = ?", (category_id, user_id))
+        self.db.commit()
+        votes = self.db.execute("SELECT COUNT(*) FROM category_votes WHERE category = ?", (category_id,)).fetchone()[0]
+        return {"id": category_id, "votes": votes, "voted": up}
 
 
 # ---- versus rooms ---------------------------------------------------------------------
@@ -1161,6 +1196,7 @@ class Server:
         r.add_get("/api/categories", self.categories)
         r.add_post("/api/categories", self.share_category)
         r.add_post("/api/categories/rename", self.rename_category)
+        r.add_post("/api/categories/vote", self.vote_category)
         r.add_get("/api/rankings", self.rankings)
         r.add_get("/api/weekly", self.weekly)
         r.add_get("/api/battlepass", self.battlepass)
@@ -1446,7 +1482,21 @@ class Server:
 
     # -- community categories
     async def categories(self, request: web.Request) -> web.Response:
-        return web.json_response({"categories": self.db.community(request.query.get("q", "").strip()[:40])})
+        me = self.db.user_for(self.token(request))
+        q = request.query
+        return web.json_response({"categories": self.db.community(q.get("q", "").strip()[:40], sort=q.get("sort", "top"),
+                                                                   me=me["id"] if me else None)})
+
+    async def vote_category(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to upvote categories.")
+        data = await self.body(request)
+        try:
+            result = self.db.vote_category(str(data.get("id", "")), user["id"], data.get("up", True) is not False)
+        except LookupError as e:
+            return self.error(str(e), 404)
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response(result)
 
     # -- the community leaderboard
     async def rankings(self, request: web.Request) -> web.Response:
