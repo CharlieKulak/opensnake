@@ -140,6 +140,7 @@ class Database:
                 id INTEGER PRIMARY KEY, sender INTEGER NOT NULL, recipient INTEGER NOT NULL, body TEXT NOT NULL,
                 created TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS messages_pair ON messages(sender, recipient, id);
+            CREATE TABLE IF NOT EXISTS week_resets (week TEXT PRIMARY KEY, n INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS battlepass (
                 user_id INTEGER NOT NULL, week TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0,
                 owned INTEGER NOT NULL DEFAULT 0, claimed TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (user_id, week));
@@ -377,14 +378,34 @@ class Database:
 
     # -- the battle pass
 
+    def current_week(self) -> str:
+        """This week's name, with the restart suffix if the site restarted it ("2026-W46r1")."""
+        week = week_id()
+        row = self.db.execute("SELECT n FROM week_resets WHERE week = ?", (week,)).fetchone()
+        return f"{week}r{row['n']}" if row else week
+
+    def restart_week(self) -> str:
+        """Start this week over: new weekly speedruns and a fresh battle pass until Monday.
+
+        Everyone's pass levels start again from 0; anyone who'd bought the pass keeps it."""
+        old = self.current_week()
+        week = week_id()
+        self.db.execute("INSERT INTO week_resets VALUES (?, 1) ON CONFLICT(week) DO UPDATE SET n = n + 1", (week,))
+        new = self.current_week()
+        self.db.execute("INSERT INTO battlepass (user_id, week, xp, owned) SELECT user_id, ?, 0, owned "
+                        "FROM battlepass WHERE week = ? AND owned = 1", (new, old))
+        self.db.commit()
+        return new
+
     def pass_row(self, user_id: int, week: str | None = None) -> sqlite3.Row:
         """A player's pass for a week, started (with any levels past 100 from last week) if new."""
-        week = week or week_id()
+        week = week or self.current_week()
         row = self.db.execute("SELECT * FROM battlepass WHERE user_id = ? AND week = ?", (user_id, week)).fetchone()
         if row:
             return row
-        last = self.db.execute("SELECT xp FROM battlepass WHERE user_id = ? AND week = ?",
-                               (user_id, previous_week(week))).fetchone()
+        # A new calendar week carries over levels past 100; a restarted week starts from 0.
+        last = None if "r" in week else self.db.execute(
+            "SELECT xp FROM battlepass WHERE user_id = ? AND week = ?", (user_id, previous_week(week))).fetchone()
         carry = max(0, last["xp"] - cos.PASS_LEVELS * cos.LEVEL_XP) if last else 0
         self.db.execute("INSERT OR IGNORE INTO battlepass (user_id, week, xp) VALUES (?, ?, ?)", (user_id, week, carry))
         self.db.commit()
@@ -1225,7 +1246,7 @@ class Server:
         # Built-in categories, and this week's weekly ones, pay: moving up the leaderboard
         # (100,000 for 1st, half that for 2nd...) and a real personal best. Community
         # categories keep their records but pay nothing (anyone could make one to farm).
-        if category in CATEGORY_BY_ID or (weekly and weekly == week_id()):
+        if category in CATEGORY_BY_ID or (weekly and weekly == self.db.current_week()):
             if rank and (rank_before is None or rank < rank_before):
                 earned += cos.placement_points(rank)
             if before is None or time_ms <= before * (1 - cos.PR_MIN_GAIN):
@@ -1246,7 +1267,7 @@ class Server:
 
     # -- weekly speedruns and the battle pass
     async def weekly(self, request: web.Request) -> web.Response:
-        week = week_id()
+        week = self.db.current_week()
         records = self.db.records()
         cats = []
         for c in weekly_categories(week):
@@ -1465,7 +1486,14 @@ def main(argv=None) -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--web", type=Path, default=DEFAULT_WEB, help="folder with the built web game")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA, help="folder for accounts and records")
+    parser.add_argument("--restart-week", action="store_true",
+                        help="start this week over (new weekly speedruns, a fresh battle pass), then exit")
     args = parser.parse_args(argv)
+    if args.restart_week:
+        db = Database(args.data / "opensnake.db")
+        print(f"This week is now {db.restart_week()}: new weekly speedruns and a fresh battle pass until Monday.")
+        db.close()
+        return
     server = Server(args.data, args.web)
     print(f"OpenSnake server {__version__}")
     print(f"  data:     {args.data}")

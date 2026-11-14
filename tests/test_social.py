@@ -596,3 +596,40 @@ class BattlePassTests(ServerTestCase):
         for t in a:
             if t["kind"] == "item":
                 self.assertIn(t["item"], cos.ALL_ITEMS)
+
+
+class RestartWeekTests(ServerTestCase):
+    async def test_restarting_the_week(self):
+        from opensnake.speedrun import weekly_categories
+        from opensnake.weeks import week_id
+        buyer, other = await self.account("alice"), await self.account("bobby")
+        db = self.server.db
+        db.add_points(1, 10_000, "test")
+        await self.post("/api/battlepass/buy", {}, buyer)
+        db.add_xp(1, 12 * cos.LEVEL_XP)
+        db.add_xp(2, 5 * cos.LEVEL_XP)
+        await self.post("/api/battlepass/claim", {"level": 5}, buyer)
+        old = (await self.get("/api/weekly"))[1]
+        self.assertEqual(old["week"], week_id())
+
+        new_week = db.restart_week()
+        self.assertEqual(new_week, f"{week_id()}r1")
+        a = (await self.get("/api/battlepass", buyer))[1]
+        b = (await self.get("/api/battlepass", other))[1]
+        self.assertEqual((a["week"], a["level"], a["owned"]), (new_week, 0, True))   # bought it: keeps it
+        self.assertEqual((b["level"], b["owned"]), (0, False))
+        self.assertFalse(any(t["claimed"] for t in a["tiers"]))
+        self.assertEqual([t["name"] for t in a["tiers"]], [t["name"] for t in cos.battle_pass(new_week)])
+        new = (await self.get("/api/weekly"))[1]
+        self.assertEqual(new["week"], new_week)
+        self.assertNotEqual([c["name"] for c in new["categories"]], [c["name"] for c in old["categories"]])
+        self.assertEqual([c["id"] for c in new["categories"]], [c.id for c in weekly_categories(new_week)])
+        # the old week's speedruns stop paying
+        classic = next((c for c in weekly_categories(week_id()) if not c.modes), None)
+        if classic:
+            run = finished_runs(classic, 1)
+            if run:
+                r = (await self.post("/api/runs", run[0].to_json(), buyer))[1]
+                self.assertTrue(r["valid"])
+                self.assertEqual(r["earned"], 0)
+        self.assertEqual(db.restart_week(), f"{week_id()}r2")  # it can happen again

@@ -11,6 +11,7 @@ from __future__ import annotations
 import colorsys
 import math
 import random
+import re
 from dataclasses import dataclass
 
 # ---- snake points --------------------------------------------------------------
@@ -99,7 +100,7 @@ def pass_skins(week: str) -> tuple[str, str]:
     """The week's two battle-pass-only skins (a Legendary and a Mythic), taking turns week by week."""
     legendary = [s.id for s in SKINS if s.series == "Pass" and s.rarity == "legendary"]
     mythic = [s.id for s in SKINS if s.series == "Pass" and s.rarity == "mythic"]
-    n = sum(int(part) for part in week.replace("-W", " ").split())  # (counts up week by week)
+    n = sum(int(part) for part in re.findall(r"\d+", week))  # (counts up week by week, and on a restart)
     return f"skin:{legendary[n % len(legendary)]}", f"skin:{mythic[n % len(mythic)]}"
 
 
