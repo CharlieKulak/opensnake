@@ -115,9 +115,9 @@ once. **Classic** turns them all off. A few pairs that make no sense together
 switch each other off (Sokoban + Portal, Sokoban + Poison, Portal + Poison).
 Press **B** for a "Blender": a random mix of 2 to 4 modes.
 
-**Community, Profile and Store.** The round button in the top-left corner
-opens **Community** (custom speedrun categories players have shared). The
-one in the top-right corner (your profile picture, with a red badge for
+**Leaderboard, Profile and Store.** The round button in the top-left corner
+opens the **Leaderboard** (every player on the site ranked by a score out of
+100). The one in the top-right corner (your profile picture, with a red badge for
 unread messages) opens your **Profile**, with your friends and messages. The
 **Store** button opens the store. See Online play: Profile and Store need an
 account on an OpenSnake website.
@@ -328,8 +328,10 @@ remove it. Bots and people can play in the same match.
 are online. An invite pops up for them wherever they are in the game: they
 press **Join** (or **J**) to come straight to your match.
 
-The **Online** screen is for logging in and versus matches. **Community**
-is the round button in the menu's top-left corner. Your **Profile** (the
+The **Online** screen is for logging in and versus matches. The
+**Leaderboard** is the round button in the menu's top-left corner, and the
+**Speedrun** screen has **Weekly** and **Community** tabs next to its
+category list (keys **1**-**3**). Your **Profile** (the
 top-right one, with tabs for Profile, Friends and Messages: keys **1**-**3**)
 and the **Store** (the **Store** button) need an account:
 
@@ -369,9 +371,12 @@ lost pays again. Community categories (see below) keep their PBs and WRs but
 don't pay snake points. With mods on, rounds don't pay either.
 
 **Battle pass.** The **Battle Pass** button on the menu opens this week's
-pass. A new pass starts every Monday (00:00 UTC) with different rewards:
-snake points, free loot boxes, skins and texture packs every 5 levels, up to
-a **Royal Crate** at level 100. Everyone earns XP by playing:
+pass. A new pass starts every Monday (00:00 UTC) with different rewards,
+every 5 levels: up to 250,000 snake points at once (440,000 in all), free
+Gold, Diamond and **Royal** Crates (Royal at levels 50, 85 and 100), Epic,
+Legendary and Mythic skins and packs, and two **pass-only skins** each week
+(a Legendary at level 75 and a Mythic at 99) that never come from loot boxes.
+Everyone earns XP by playing:
 
 | For | XP |
 | --- | --- |
@@ -379,12 +384,13 @@ a **Royal Crate** at level 100. Everyone earns XP by playing:
 | Finishing a speedrun | 150 (300 for a weekly speedrun) |
 | A personal best | +300 |
 
-A level takes 300 XP. Buy the pass (10,000 snake points) to claim the
+A level takes 300 XP, and you can gain up to 20 levels a day (the day
+starts at 00:00 UTC), so level 100 takes at least five days. Buy the pass (10,000 snake points) to claim the
 rewards for every level you've reached that week, including levels you
 reached before buying it. Levels don't stop at 100, and any levels past 100
 carry over to next week's pass (level 120 starts the next week at level 20).
 
-**Weekly speedruns.** Community's **Weekly** tab has 10 new speedrun
+**Weekly speedruns.** The Speedrun screen's **Weekly** tab has 10 new speedrun
 categories every week, made fresh on Monday. They're ordinary speedruns with
 their own leaderboards, and they pay like the built-in ones while their week
 lasts.
@@ -427,7 +433,7 @@ opponents don't change your rank.
 | Anaconda | 1,700 |
 | Basilisk | 2,300 |
 
-**Community.** Custom speedrun categories (see Custom categories above) that
+**Community.** The Speedrun screen's **Community** tab has custom speedrun categories (see Custom categories above) that
 players have made, with who made them, how many people have played them and
 the WR. **Share my categories** adds yours. A category's creator is whoever
 shared it, or ran it, first, and they can **Rename** it at any time: its
@@ -435,7 +441,7 @@ records stay, and everyone who saved it gets the new name the next time they
 open the Community tab. **Play** starts a run; **Save** adds it to your
 Speedrun screen.
 
-**Community leaderboard.** Community's **Leaderboard** tab ranks every
+**Community leaderboard.** The **Leaderboard** (the menu's top-left round button) ranks every
 player on the site by a score out of 100, made of four parts:
 
 | Part | Up to | Full marks at |
@@ -488,7 +494,7 @@ replaced with an [asset pack](#asset-packs). The menu shows the best for the cur
 | Mode | What it does |
 | --- | --- |
 | Classic | Eat fruit, grow longer, avoid the walls and yourself. |
-| Wall | Every fruit you eat drops a new wall on the board. |
+| Wall | Every fruit you eat drops a new wall on the board. Fruit never spawns in a dead end that would trap you once you eat it (this goes for any board with walls, statues or gates). |
 | Portal | Fruit comes in pairs. Eat one and you come out of the other. |
 | Cheese | Your body has holes you can slither through. |
 | Borderless | Leave one side of the board and come back on the other. |

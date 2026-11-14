@@ -26,14 +26,16 @@ POINTS = (214, 150, 0)
 # menu's buttons; Community and Profile from the circles in its top corners.
 SCREENS = {
     "online": [("play", "Play")],
-    "community": [("community", "Categories"), ("weekly", "Weekly"), ("ranking", "Leaderboard")],
+    # (the Speedruns tab is the app's own category list; Weekly and Community are drawn here)
+    "speedrun": [("speedrun", "Speedruns"), ("weekly", "Weekly"), ("community", "Community")],
+    "community": [("ranking", "Leaderboard")],
     "profile": [("profile", "Profile"), ("friends", "Friends"), ("messages", "Messages")],
     "store": [("store", "Store")],
     "battlepass": [("battlepass", "Battle Pass")],
 }
 SCREEN_OF = {tab: screen for screen, tabs in SCREENS.items() for tab, _label in tabs}
-TITLES = {"online": "Online", "community": "Community", "profile": "Profile", "store": "Store",
-          "battlepass": "Battle Pass"}
+TITLES = {"online": "Online", "community": "Leaderboard", "profile": "Profile", "store": "Store",
+          "battlepass": "Battle Pass", "speedrun": "Speedrun"}
 STORE_TABS = [("shop", "Shop"), ("crates", "Loot boxes"), ("collection", "Collection")]
 
 REEL_CARDS = 48       # cards on a loot box reel
@@ -91,6 +93,9 @@ class Hub:
                 "community": ["community"] + (["rename"] if self.renaming else [])}.get(tab, [])
 
     def open_tab(self, tab: str) -> None:
+        if tab == "speedrun":  # the app's own speedrun list
+            self.app.open_speedrun()
+            return
         self.app.state = SCREEN_OF[tab]
         self.on.tab = tab
         self.on.focus = None
@@ -530,7 +535,7 @@ class Hub:
             app.custom_cats.append(cat)
             app.save_customs()
         if play:
-            app.start_run(cat, "speedrun")
+            app.start_run(cat, "community")
         else:
             self.on.say(f"Added \"{cat.name}\" to your Speedrun screen.", GOOD)
 
@@ -812,8 +817,9 @@ class Hub:
         pygame.draw.rect(scr, (230, 233, 226), bar, border_radius=7)
         frac = info["into_level"] / max(1, info["level_xp"])
         pygame.draw.rect(scr, ACCENT, (bar.x, bar.y, max(14, int(bar.w * frac)), bar.h), border_radius=7)
-        self.text(f"{info['into_level']} / {info['level_xp']} XP to level {level + 1}", ph * 0.022, MUTED,
-                  topleft=(x, bar.bottom + 6))
+        self.text(f"{info['into_level']} / {info['level_xp']} XP to level {level + 1}   ·   today "
+                  f"{info.get('day_xp', 0):,} / {info.get('day_limit', 0):,} XP (up to {cos.DAILY_LEVELS} levels a day,"
+                  f" new day in {info.get('day_resets', '?')})", ph * 0.022, MUTED, topleft=(x, bar.bottom + 6))
         self.text(f"Week {info['week']}   ·   ends in {info['left']}   ·   levels past {info['max']} carry over "
                   "to next week", ph * 0.022, MUTED, topleft=(x, bar.bottom + 6 + ph * 0.03))
         # buy / owned
@@ -830,7 +836,7 @@ class Hub:
         else:
             self.button(b, f"Buy pass  {cos.format_points(info['price'])}", self.buy_pass, True,
                         points >= info["price"])
-            note = "Buy it to claim the rewards for every level you reach this week"
+            note = "Then claim every level you reach this week"
         self.text(note, ph * 0.022, MUTED, midtop=(b.centerx, b.bottom + 6))
         self.points_badge(points, ph * 0.026, topright=(x + w, b.bottom + 6 + ph * 0.035))
 
@@ -879,8 +885,8 @@ class Hub:
             pygame.draw.line(scr, ACCENT, (x, line_y), (end, line_y), 4)
         line = self.text(f"Rewards {self.pass_scroll + 1}-{self.pass_scroll + len(shown)} of {len(tiers)}   ·   "
                          "Wheel or Left/Right: see more", ph * 0.024, INK, midtop=(p.centerx, line_y + 12))
-        self.text(f"XP: rounds and versus matches give as much XP as snake points, a speedrun {cos.XP_SPEEDRUN}, "
-                  f"a weekly speedrun {cos.XP_WEEKLY}, a personal best +{cos.XP_PB}. {cos.LEVEL_XP} XP a level.",
+        self.text(f"XP: rounds and matches = their snake points  ·  speedrun {cos.XP_SPEEDRUN}  ·  weekly "
+                  f"{cos.XP_WEEKLY}  ·  personal best +{cos.XP_PB}  ·  {cos.LEVEL_XP} XP a level",
                   ph * 0.022, MUTED, midtop=(p.centerx, line.bottom + 8))
 
 

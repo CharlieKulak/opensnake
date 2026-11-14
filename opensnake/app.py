@@ -395,8 +395,8 @@ class App:
         """Back to wherever the run was started from."""
         if self.attempt_origin == "menu":
             self.open_menu()
-        elif self.attempt_origin == "weekly":
-            self.online.hub.open_tab("weekly")
+        elif self.attempt_origin in ("weekly", "community"):
+            self.online.hub.open_tab(self.attempt_origin)
         else:
             self.open_speedrun()
 
@@ -434,8 +434,15 @@ class App:
 
     def open_speedrun(self):
         self.state = "speedrun"
+        self.online.tab = "speedrun"  # (Weekly and Community are this screen's other tabs)
+        self.online.focus = None
         self.attempt = None
         self.new_game()
+
+    @property
+    def sr_online_tab(self) -> bool:
+        """The Speedrun screen is showing its Weekly or Community tab (drawn by the Online screens)."""
+        return self.state == "speedrun" and self.online.tab in ("weekly", "community")
 
     def turn_boost(self) -> float:
         """How much faster to move while a turn is waiting (1.0 = normal).
@@ -565,6 +572,8 @@ class App:
                 self.toggle_mute()
             elif self.state == "menu":
                 self.menu_key(ev)
+            elif self.sr_online_tab:
+                self.online.key(ev)
             elif self.state == "speedrun":
                 self.speedrun_key(ev)
             elif self.state == "addons":
@@ -582,7 +591,7 @@ class App:
             if self.dragging:
                 self.slide_to(ev.pos[0])
                 return
-            if self.state == "speedrun":
+            if self.state == "speedrun" and not self.sr_online_tab:
                 row = self.sr_hit(ev.pos)
                 if row is not None:
                     self.sr_focus = row
@@ -590,6 +599,8 @@ class App:
             hit = self.hit(ev.pos)
             if hit is not None and self.state == "menu" and not self.editing:
                 self.focus = hit
+        elif ev.type == pygame.MOUSEWHEEL and self.sr_online_tab:
+            self.online.hub.wheel(ev.y)
         elif ev.type == pygame.MOUSEWHEEL and self.state == "speedrun":
             self.sr_scroll = max(0, self.sr_scroll - ev.y)
             self.sr_wheeled = True  # scroll the list; the selection follows (not the other way round)
@@ -654,7 +665,12 @@ class App:
                     action()
                     return
             return
+        if self.sr_online_tab:
+            self.online.click(pos)
+            return
         if self.state == "speedrun":
+            if self.online.popup_click(pos) or self.online_tab_click(pos):
+                return
             row = self.sr_hit(pos)
             if row is not None:
                 self.sr_focus = row
@@ -846,8 +862,10 @@ class App:
             self.open_addons()
         elif w.get("id") == "online":
             self.open_online()
-        elif w.get("id") in ("store", "community", "battlepass"):
+        elif w.get("id") in ("store", "battlepass"):
             self.online.hub.open_tab(w["id"])
+        elif w.get("id") == "community":  # the round button: the leaderboard
+            self.online.hub.open_tab("ranking")
         elif w.get("id") == "profile":
             self.online.hub.open_tab("profile")
         elif w.get("id") == "quit":
@@ -999,7 +1017,7 @@ class App:
         elif focused.get("id") == "battlepass":
             desc = "This week's battle pass: level up by playing and claim loot boxes, skins and packs."
         elif focused.get("id") == "community":
-            desc = "Custom speedrun categories players have made and shared, with their records."
+            desc = "Every player on this site, ranked by a score out of 100."
         elif focused.get("id") == "profile":
             desc = "Your profile, friends and messages."
         elif focused.get("id") == "online":
@@ -1007,7 +1025,7 @@ class App:
         elif focused.get("id") == "addons":
             desc = "Turn resource packs and mods on and off, like Minecraft resource packs."
         elif focused.get("id") == "speedrun":
-            desc = "Race fixed categories against the clock. Personal and world records."
+            desc = "Speedrun categories, this week's speedruns and community ones, with PBs and WRs."
         elif focused["kind"] == "check":
             cat = self.custom_category()
             pb = self.store.pb(cat.id)
@@ -1051,7 +1069,7 @@ class App:
             for dx, h, col in ((-1.15, 1.1, (192, 200, 210)), (0, 1.7, (255, 196, 0)), (1.15, 0.8, (205, 127, 50))):
                 pygame.draw.rect(scr, col, (c[0] + dx * u - u * 0.55, base - h * u, u * 1.1, h * u), border_radius=2)
             pygame.draw.circle(scr, (255, 196, 0), (c[0], base - 1.7 * u - u * 0.55), u * 0.4)
-            label = "Community"
+            label = "Leaderboard"
         else:
             me = self.online.me if self.online.logged_in else None
             if me:
@@ -1416,9 +1434,21 @@ class App:
 
     # ---- speedrun ------------------------------------------------------------------
 
+    def online_tab_click(self, pos) -> bool:
+        """The Speedrun screen's tab bar (drawn with the Online screens' tabs)."""
+        for rect, action in self.online.hits:
+            if rect.collidepoint(pos):
+                action()
+                return True
+        return False
+
     def speedrun_key(self, ev):
         cats = self.all_categories()
         n = len(cats)
+        tabs = self.online.hub.tabs()
+        if pygame.K_1 <= ev.key < pygame.K_1 + len(tabs):
+            self.online.hub.open_tab(tabs[ev.key - pygame.K_1][0])
+            return
         if ev.key != pygame.K_DELETE:
             self.sr_delete = None
         if ev.key in (pygame.K_UP, pygame.K_w):
@@ -1462,11 +1492,10 @@ class App:
         p = pygame.Rect((sw - pw) // 2, (sh - ph) // 2, pw, ph)
         pygame.draw.rect(scr, PANEL, p, border_radius=18)
 
-        title = R.font(int(ph * 0.07)).render("Speedrun", True, (74, 117, 44))
-        scr.blit(title, title.get_rect(midtop=(p.centerx, p.y + int(ph * 0.025))))
-        sub = R.font(int(ph * 0.028), False).render(
-            "Pick a category. Times are in-game time, so frame rate doesn't matter.", True, MUTED)
-        scr.blit(sub, sub.get_rect(midtop=(p.centerx, p.y + int(ph * 0.025) + title.get_height())))
+        title = R.font(int(ph * 0.06)).render("Speedrun", True, (74, 117, 44))
+        scr.blit(title, title.get_rect(midtop=(p.centerx, p.y + int(ph * 0.02))))
+        self.online.hits = []  # the tab bar: Speedruns / Weekly / Community
+        self.online.hub.draw_tabs(p, p.y + int(ph * 0.09))
 
         cols = [("Category", 0.04), ("Goal", 0.36), ("Board", 0.52), ("Your PB", 0.68), ("World record", 0.83)]
         top = p.y + int(ph * 0.17)
@@ -1560,7 +1589,7 @@ class App:
         src = {"online": "updated online", "cached": "saved from online", "bundled": "built in"}.get(
             self.records.source, "none")
         hint = R.font(int(ph * 0.022), False).render(
-            "Up/Down or wheel: choose   Enter: start   Insert: add my settings   Delete: remove custom   Esc: back"
+            "Up/Down or wheel: choose   Enter: start   1-3: tabs   Insert: add my settings   Delete: remove custom   Esc: back"
             f"      World records: {src}" + (f" ({self.records.updated})" if self.records.updated else ""),
             True, MUTED)
         if hint.get_width() > pw - 20:
@@ -1819,6 +1848,8 @@ class App:
         self.draw_overlay(rect)
         if self.state == "menu":
             self.draw_menu()
+        elif self.sr_online_tab:
+            self.online.draw_online()
         elif self.state == "speedrun":
             self.draw_speedrun()
         elif self.state == "addons":

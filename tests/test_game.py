@@ -254,3 +254,32 @@ class PathTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SafeFruitTests(unittest.TestCase):
+    """With obstacles on the board, fruit never spawns where eating it traps you."""
+
+    def test_no_fruit_in_dead_ends(self):
+        from opensnake.game import Wall
+        for seed in range(200):
+            g = Game(10, 9, ["wall"], 1, rng=random.Random(seed))
+            for _ in range(25):  # a crowded board, like late in a wall run
+                c = g.random_free(lambda x, y: g.head_dist(x, y) >= 2)
+                if c:
+                    g.walls[c] = Wall(*c)
+            g.apples.clear()
+            g.fill_apples()
+            for a in g.apples:
+                self.assertTrue(g.escapable(a.x, a.y), (seed, a.x, a.y))
+
+    def test_a_dead_end_is_not_escapable(self):
+        from opensnake.game import Wall
+        g = Game(10, 9, ["wall"], 1, rng=random.Random(1))
+        for c in ((5, 1), (7, 1), (6, 2)):  # walls on three sides of (6, 1): one way in, no way out
+            g.walls[c] = Wall(*c)
+        self.assertFalse(g.escapable(6, 1))
+        self.assertTrue(g.escapable(2, 6))
+
+    def test_boards_without_obstacles_spawn_as_before(self):
+        g = Game(10, 9, (), 1, rng=random.Random(1))
+        self.assertTrue(all(g.escapable(x, y) for x in range(10) for y in range(9)))

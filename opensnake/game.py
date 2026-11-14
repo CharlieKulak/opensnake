@@ -316,6 +316,42 @@ class Game:
                     return True
         return False
 
+    def escapable(self, x: int, y: int) -> bool:
+        """With obstacles on the board, is a fruit here safe to eat?
+
+        Not if it's a trap: after eating it the snake needs another way out than the
+        way in, and enough open space to fit itself. Every wall counts (eating can
+        swap Dimension walls) and so does every gate (they open and close). Boards
+        without obstacles don't need this, so fruit there spawns exactly as before.
+        """
+        if not (self.walls or self.gates):
+            return True
+        wrap = self.has("borderless")
+        blocked = set(self.walls) | {(g.x, g.y) for g in self.gates} | self.mines
+        blocked.update((p.x, p.y) for s in self.snakes for p in s.body)
+
+        def open_neighbours(cx, cy):
+            out = []
+            for dx, dy in DIRS.values():
+                nx, ny = cx + dx, cy + dy
+                if wrap:
+                    nx, ny = nx % self.w, ny % self.h
+                elif not self.in_bounds(nx, ny):
+                    continue
+                if (nx, ny) not in blocked:
+                    out.append((nx, ny))
+            return out
+        if len(open_neighbours(x, y)) < 2:  # a dead end: in and no way out
+            return False
+        need = min(80, max(len(s.body) for s in self.snakes) + 2)
+        seen, todo = {(x, y)}, [(x, y)]
+        while todo and len(seen) < need:
+            for n in open_neighbours(*todo.pop()):
+                if n not in seen:
+                    seen.add(n)
+                    todo.append(n)
+        return len(seen) >= need
+
     def hazard_cell(self, extra=lambda x, y: True):
         return (self.random_free(lambda x, y: self.head_dist(x, y) >= 3 and not self.in_path(x, y) and extra(x, y))
                 or self.random_free(lambda x, y: self.head_dist(x, y) >= 2 and extra(x, y)))
@@ -349,12 +385,16 @@ class Game:
             self._maybe_lock(apple)
             return True
 
-        a = self.random_free(lambda x, y: self.head_dist(x, y) >= 2)
+        # A safe spot if there is one (see escapable), else anywhere free.
+        a = (self.random_free(lambda x, y: self.head_dist(x, y) >= 2 and self.escapable(x, y))
+             or self.random_free(lambda x, y: self.head_dist(x, y) >= 2))
         if not a:
             return False
         apple = self._add_apple(*a)
         if self.has("portal"):
-            b = self.random_free(lambda x, y: self.head_dist(x, y) >= 2 and abs(x - a[0]) + abs(y - a[1]) >= 4)
+            def far(x, y):
+                return self.head_dist(x, y) >= 2 and abs(x - a[0]) + abs(y - a[1]) >= 4
+            b = self.random_free(lambda x, y: far(x, y) and self.escapable(x, y)) or self.random_free(far)
             if not b:
                 self.apples.pop()
                 return False

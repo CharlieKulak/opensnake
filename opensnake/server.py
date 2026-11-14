@@ -54,7 +54,7 @@ import random
 import re
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
@@ -157,6 +157,11 @@ class Database:
                              ("losses", "INTEGER NOT NULL DEFAULT 0"), ("draws", "INTEGER NOT NULL DEFAULT 0")):
             if column not in have:
                 self.db.execute(f"ALTER TABLE users ADD COLUMN {column} {decl}")
+        # The battle pass's daily XP cap (added in 2.6).
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(battlepass)")}
+        for column, decl in (("day", "TEXT NOT NULL DEFAULT ''"), ("day_xp", "INTEGER NOT NULL DEFAULT 0")):
+            if column not in have:
+                self.db.execute(f"ALTER TABLE battlepass ADD COLUMN {column} {decl}")
         self.db.commit()  # one write for all of it
 
     def close(self) -> None:
@@ -385,11 +390,18 @@ class Database:
         self.db.commit()
         return self.pass_row(user_id, week)
 
-    def add_xp(self, user_id: int, xp: int) -> None:
-        if xp > 0:
-            week = self.pass_row(user_id)["week"]
-            self.db.execute("UPDATE battlepass SET xp = xp + ? WHERE user_id = ? AND week = ?", (xp, user_id, week))
-            self.db.commit()
+    def add_xp(self, user_id: int, xp: int, today: str | None = None) -> int:
+        """Add battle pass XP, up to the day's limit (so level 100 takes five days); returns what was added."""
+        if xp <= 0:
+            return 0
+        row = self.pass_row(user_id)
+        today = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        used = row["day_xp"] if row["day"] == today else 0
+        added = max(0, min(xp, cos.DAILY_LEVELS * cos.LEVEL_XP - used))
+        self.db.execute("UPDATE battlepass SET xp = xp + ?, day = ?, day_xp = ? WHERE user_id = ? AND week = ?",
+                        (added, today, used + added, user_id, row["week"]))
+        self.db.commit()
+        return added
 
     def buy_pass(self, user_id: int) -> int:
         row = self.pass_row(user_id)
@@ -428,7 +440,13 @@ class Database:
         week, xp = row["week"], row["xp"]
         level = cos.pass_level(xp)
         claimed = set(json.loads(row["claimed"]))
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        day_xp = row["day_xp"] if row["day"] == today else 0
+        tomorrow = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        resets = int((tomorrow - datetime.now(timezone.utc)).total_seconds())
         return {"week": week, "ends": week_end(week).strftime("%Y-%m-%dT%H:%M:%SZ"), "left": time_left(week),
+                "day_xp": day_xp, "day_limit": cos.DAILY_LEVELS * cos.LEVEL_XP,
+                "day_resets": f"{resets // 3600}h {resets % 3600 // 60}m",
                 "owned": bool(row["owned"]), "price": cos.PASS_PRICE, "xp": xp, "level": level,
                 "level_xp": cos.LEVEL_XP, "into_level": xp - level * cos.LEVEL_XP, "max": cos.PASS_LEVELS,
                 "tiers": [{**t, "claimed": t["level"] in claimed, "reached": level >= t["level"]}

@@ -88,10 +88,19 @@ def next_rank(rp: int) -> tuple[str, int] | None:
 PASS_PRICE = 10_000
 PASS_LEVELS = 100       # the reward track's length
 LEVEL_XP = 300          # XP per level
+DAILY_LEVELS = 20       # the most levels you can gain in a day (UTC), so level 100 takes 5 days
 XP_SPEEDRUN = 150       # finishing a speedrun (on top of the snake points it earns as XP)
 XP_WEEKLY = 300         # finishing one of the week's speedruns
 XP_PB = 300             # a new personal best
 # (rounds and versus matches give as much XP as the snake points they earn)
+
+
+def pass_skins(week: str) -> tuple[str, str]:
+    """The week's two battle-pass-only skins (a Legendary and a Mythic), taking turns week by week."""
+    legendary = [s.id for s in SKINS if s.series == "Pass" and s.rarity == "legendary"]
+    mythic = [s.id for s in SKINS if s.series == "Pass" and s.rarity == "mythic"]
+    n = sum(int(part) for part in week.replace("-W", " ").split())  # (counts up week by week)
+    return f"skin:{legendary[n % len(legendary)]}", f"skin:{mythic[n % len(mythic)]}"
 
 
 def battle_pass(week: str) -> list[dict]:
@@ -99,17 +108,18 @@ def battle_pass(week: str) -> list[dict]:
 
     Different every week (made from the week's name), the same for everyone."""
     rng = random.Random(f"opensnake pass {week}")
-    shop_skins = {r: [f"skin:{s.id}" for s in SKINS if s.rarity == r and s.shop] for r in ("common", "uncommon", "rare")}
-    loot_skins = {r: [f"skin:{s.id}" for s in SKINS if s.rarity == r] for r in ("epic", "legendary")}
+
+    def pick(rarity, kind="skin"):
+        return rng.choice([it for it in items_of(rarity) if it.startswith(kind + ":")])
+    pass_legendary, pass_mythic = pass_skins(week)
     plan = [  # (level, reward)
-        (5, ("points", 1_000)), (10, ("crate", "bronze")), (15, ("item", rng.choice(shop_skins["common"]))),
-        (20, ("points", 2_500)), (25, ("crate", "silver")), (30, ("item", rng.choice(shop_skins["uncommon"]))),
-        (35, ("item", rng.choice([f"pack:{p.id}" for p in PACKS if p.price]))), (40, ("points", 5_000)),
-        (45, ("crate", "gold")), (50, ("item", rng.choice(shop_skins["rare"]))), (55, ("points", 7_500)),
-        (60, ("crate", "gold")), (65, ("item", rng.choice(loot_skins["epic"]))),
-        (70, ("item", rng.choice([f"pack:{p.id}" for p in PACKS if p.rarity == "epic"]))),
-        (75, ("crate", "diamond")), (80, ("points", 15_000)), (85, ("item", rng.choice(loot_skins["legendary"]))),
-        (90, ("crate", "diamond")), (95, ("points", 25_000)), (100, ("crate", "royal")),
+        (5, ("points", 5_000)), (10, ("crate", "gold")), (15, ("item", pick("epic"))),
+        (20, ("points", 10_000)), (25, ("crate", "diamond")), (30, ("item", pick("epic", "pack"))),
+        (35, ("item", pick("legendary"))), (40, ("points", 25_000)), (45, ("crate", "diamond")),
+        (50, ("crate", "royal")), (55, ("item", pick("legendary", "pack"))), (60, ("points", 50_000)),
+        (65, ("item", pick("mythic"))), (70, ("crate", "diamond")), (75, ("item", pass_legendary)),
+        (80, ("points", 100_000)), (85, ("crate", "royal")), (90, ("item", pick("mythic", "pack"))),
+        (95, ("points", 250_000)), (99, ("item", pass_mythic)), (100, ("crate", "royal")),
     ]
     track = []
     for level, (kind, value) in plan:
@@ -320,6 +330,25 @@ SKINS = [
     _skin("supernova", "Supernova", "mythic", "rainbow", ["#ffffff"], "#ffffff", glow=True),
     _skin("eclipse", "Eclipse", "mythic", "pulse", ["#050505", "#ffb300"], "#ffe082", glow=True),
     _skin("dragonscale", "Dragon Scale", "mythic", "shimmer", ["#0b5d3b", "#ffd700"], "#c8ffdf", glow=True),
+
+    # Battle pass only (two each week, at levels 75 and 99): never in the shop or loot boxes
+    _skin("solarflare", "Solar Flare", "legendary", "flow", ["#ff6a00", "#ffd000", "#fff6c2", "#ffd000"], "#fff1a8",
+          glow=True, series="Pass"),
+    _skin("tidalwave", "Tidal Wave", "legendary", "flow", ["#0a3d7a", "#1aa3c9", "#e6fbff", "#1aa3c9"], "#bff4ff",
+          glow=True, series="Pass"),
+    _skin("venomstrike", "Venom Strike", "legendary", "pulse", ["#0c1a06", "#7cff2a"], "#c6ff8a", glow=True,
+          series="Pass"),
+    _skin("crystal", "Crystal", "legendary", "shimmer", ["#b9a7e8", "#ffffff"], "#ece6ff", glow=True, series="Pass"),
+    _skin("thunderstorm", "Thunderstorm", "legendary", "pulse", ["#16204a", "#ffe94d"], "#fff6a0", glow=True,
+          series="Pass"),
+    _skin("champion", "Champion", "mythic", "shimmer", ["#c99a12", "#fffbe6"], "#ffffff", glow=True, series="Pass"),
+    _skin("nebula", "Nebula", "mythic", "flow", ["#3a0f6b", "#d14fd8", "#3f7bff", "#d14fd8"], "#f0c8ff", glow=True,
+          series="Pass"),
+    _skin("hydra", "Hydra", "mythic", "flow", ["#06402f", "#18b38a", "#ffd23f", "#18b38a"], "#c8ffe9", glow=True,
+          series="Pass"),
+    _skin("oblivion", "Oblivion", "mythic", "pulse", ["#050505", "#d0102a"], "#ff6b7a", glow=True, series="Pass"),
+    _skin("starfall", "Starfall", "mythic", "flow", ["#0b1238", "#ffffff", "#ffd54f", "#ffffff"], "#ffffff",
+          glow=True, series="Pass"),
 ]
 SKIN_BY_ID = {s.id: s for s in SKINS}
 
@@ -471,8 +500,12 @@ CRATES = [
 CRATE_BY_ID = {c.id: c for c in CRATES}
 
 
+PASS_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Pass"}
+
+
 def items_of(rarity: str) -> list[str]:
-    return [it for it in ALL_ITEMS if item_rarity(it) == rarity]
+    """Everything of a rarity that loot boxes can give (not the battle-pass-only skins)."""
+    return [it for it in ALL_ITEMS if item_rarity(it) == rarity and it not in PASS_ONLY]
 
 
 def roll(crate: Crate, rng=random) -> str:

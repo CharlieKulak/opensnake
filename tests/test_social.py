@@ -16,8 +16,8 @@ from opensnake.speedrun import CATEGORY_BY_ID, make_custom  # noqa: E402
 
 class CatalogueTests(ServerTestCase):
     def test_skins_with_the_rarest_only_in_loot_boxes(self):
-        self.assertEqual(len(cos.SKINS), 94)
-        self.assertEqual(len({s.id for s in cos.SKINS}), 94)
+        self.assertEqual(len(cos.SKINS), 104)
+        self.assertEqual(len({s.id for s in cos.SKINS}), 104)
         stands = [s for s in cos.SKINS if s.series == "Stand"]
         self.assertEqual(len(stands), 34)
         self.assertTrue(all(not s.shop for s in stands))
@@ -532,7 +532,7 @@ class BattlePassTests(ServerTestCase):
         token = await self.account()
         db = self.server.db
         info = (await self.get("/api/battlepass", token))[1]
-        self.assertEqual((info["owned"], info["level"], info["price"], len(info["tiers"])), (False, 0, 10_000, 20))
+        self.assertEqual((info["owned"], info["level"], info["price"], len(info["tiers"])), (False, 0, 10_000, 21))
         self.assertEqual(info["tiers"][-1]["level"], 100)
         self.assertEqual(info["tiers"][-1]["crate"], "royal")
         self.assertIn("Buy", (await self.post("/api/battlepass/claim", {"level": 5}, token))[1]["error"])
@@ -546,14 +546,26 @@ class BattlePassTests(ServerTestCase):
         info = (await self.get("/api/battlepass", token))[1]
         self.assertEqual((info["level"], info["into_level"]), (12, 10))
         r = (await self.post("/api/battlepass/claim", {"level": 5}, token))[1]
-        self.assertEqual((r["tier"]["kind"], r["points"]), ("points", 5_000 + 1_000))
-        r = (await self.post("/api/battlepass/claim", {"level": 10}, token))[1]  # a free Bronze Crate
+        self.assertEqual((r["tier"]["kind"], r["points"]), ("points", 5_000 + 5_000))
+        r = (await self.post("/api/battlepass/claim", {"level": 10}, token))[1]  # a free Gold Crate
         self.assertIn(r["item"], cos.ALL_ITEMS)
         self.assertIn("already", (await self.post("/api/battlepass/claim", {"level": 5}, token))[1]["error"])
         self.assertIn("Reach", (await self.post("/api/battlepass/claim", {"level": 15}, token))[1]["error"])
         self.assertIn("no reward", (await self.post("/api/battlepass/claim", {"level": 7}, token))[1]["error"])
         claimed = [t["level"] for t in (await self.get("/api/battlepass", token))[1]["tiers"] if t["claimed"]]
         self.assertEqual(claimed, [5, 10])
+
+    async def test_a_day_gives_at_most_20_levels(self):
+        token = await self.account()
+        db = self.server.db
+        cap = cos.DAILY_LEVELS * cos.LEVEL_XP
+        self.assertEqual(db.add_xp(1, cap * 3, today="2026-11-13"), cap)  # the rest of a huge haul is lost
+        self.assertEqual(db.add_xp(1, 500, today="2026-11-13"), 0)
+        self.assertEqual(db.add_xp(1, 500, today="2026-11-14"), 500)    # a new day
+        info = (await self.get("/api/battlepass", token))[1]
+        self.assertEqual(info["level"], (cap + 500) // cos.LEVEL_XP)
+        self.assertEqual(info["day_limit"], cap)
+        self.assertEqual(100 // cos.DAILY_LEVELS, 5)  # level 100 takes five days
 
     async def test_xp_from_playing_and_levels_past_100_carry_over(self):
         token = await self.account()
@@ -572,7 +584,14 @@ class BattlePassTests(ServerTestCase):
 
     def test_each_week_has_its_own_rewards(self):
         a, b = cos.battle_pass("2026-W46"), cos.battle_pass("2026-W47")
-        self.assertEqual([t["level"] for t in a], list(range(5, 101, 5)))
+        self.assertEqual([t["level"] for t in a], list(range(5, 100, 5)) + [99, 100])
+        self.assertEqual([t.get("crate") for t in a if t["level"] in (50, 85, 100)], ["royal"] * 3)
+        legendary, mythic = cos.pass_skins("2026-W46")
+        self.assertEqual([t.get("item") for t in a if t["level"] in (75, 99)], [legendary, mythic])
+        self.assertNotEqual(cos.pass_skins("2026-W47"), (legendary, mythic))  # new ones each week
+        rng = random.Random(2)
+        for crate in cos.CRATES:  # never from loot boxes
+            self.assertFalse({cos.roll(crate, rng) for _ in range(300)} & cos.PASS_ONLY)
         self.assertNotEqual([t.get("item") for t in a], [t.get("item") for t in b])
         for t in a:
             if t["kind"] == "item":

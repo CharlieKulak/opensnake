@@ -601,8 +601,8 @@ class Online:
             if self.focus == "match_name" and f.value != before:
                 self.set_details(name=f.value)
             return
-        if state in ("online", "community", "profile", "store", "battlepass") and self.tab != "play" and \
-                self.hub.key(ev):
+        if state in ("online", "community", "profile", "store", "battlepass", "speedrun") and self.tab != "play" \
+                and self.hub.key(ev):
             return
         tabs = self.hub.tabs()
         if len(tabs) > 1 and pygame.K_1 <= ev.key < pygame.K_1 + len(tabs):
@@ -829,7 +829,7 @@ class Online:
                 "messages": "Enter: send   Wheel: older messages   1-3: tabs   Esc: close chat",
                 "community": "Type to search   Wheel: scroll   1-3: tabs   Esc: back",
                 "weekly": "Wheel: scroll   1-3: tabs   Esc: back",
-                "ranking": "Wheel: scroll   1-3: tabs   Esc: back",
+                "ranking": "Wheel: scroll   Esc: back",
                 "battlepass": "Wheel or Left/Right: rewards   Esc: back"}.get(self.tab, "1-3: tabs   Esc: back")
         self._text(hint, ph * 0.022, MUTED, midbottom=(p.centerx, p.bottom - 8))
         self.focus = focus
