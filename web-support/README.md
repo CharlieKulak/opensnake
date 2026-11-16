@@ -1,98 +1,87 @@
-# OpenSnake website and server
+# Running an OpenSnake site
 
-This folder builds the browser version of OpenSnake and runs the **OpenSnake
-server**, which serves the game and adds the online features:
-
-- **Accounts**: players create a username and password and stay logged in on
-  that browser.
-- **Site world records**: logged-in players' speedrun times go on this site's
-  own leaderboards. Every run is replayed by the server to check the time
-  before it counts.
-- **Snake points, the store, profiles, friends, ranks and community
-  categories**: all kept per site, like the leaderboards.
-- **Versus**: 1v1 up to 4v4 matches, with or without bots. One player hosts and gets a 4-letter
-  code, others join with it. Hosts can name a match and make it public, so
-  anyone can find it under **Public matches** and search for it. Browser and
-  desktop players can play together.
-
-Each server keeps its own accounts and records in its own data folder, so two
-websites running OpenSnake have completely separate logins and leaderboards.
+This folder has what you need to run the OpenSnake server as a website: the
+systemd service, the update script, and the web clients the site serves.
 
 | File | What it does |
 | --- | --- |
-| `build.sh` | Builds the browser game into `build/`; with `--serve` it then starts the OpenSnake server |
-| `main.py` | The browser entry point that starts the game |
-| `serve.py` | A plain file server for the release download (no accounts, records or versus) |
 | `opensnake.service` | systemd service to run the server in the background on Linux |
-| `update.sh` | Updates a server: pull, install, rebuild the web game, restart the service |
-| `rebuild-if-stale.sh` | Rebuilds the web game only if the game changed; the service runs it on start |
-| `build/` | Build output. Ignored by git, safe to delete |
-| `data/` | The server's accounts and records (`opensnake.db`). Ignored by git; back it up |
+| `update.sh` | Updates a site: pull, install, update the web clients, restart the service |
+| `install-client.sh` | Installs or updates one web client, from a folder, a `.zip`, or a download link |
+| `clients.list` | The web clients `update.sh` keeps up to date |
+| `clients/` | The installed web clients, one folder each. Ignored by git |
+| `data/` | The site's accounts and records (`opensnake.db`). Ignored by git; back it up |
 
-The server itself is `opensnake/server.py` in the game package.
+## First-time setup
 
-## Running the website
-
-Do this on the computer that hosts the website, from a clone of the
-repository.
-
-### First-time setup
+Do this on the computer that hosts the website:
 
 ```sh
 git clone https://github.com/CharlieKulak/opensnake.git
 cd opensnake
 python3 -m venv .venv
-.venv/bin/pip install -e ".[server]" pygbag
+.venv/bin/pip install -e ".[server]"
 ```
 
-### Build and start
+## Web clients
+
+The server serves the web build of any OpenSnake client. Each one lives in
+`clients/<name>/` and is served at `/<name>/`. One client is also the
+**default**, served at `/`: Crustacean if it's installed, or whichever one you
+choose with `--default-client`.
 
 ```sh
-PYTHON=.venv/bin/python web-support/build.sh --serve
+# from their latest releases (this is what clients.list does):
+web-support/install-client.sh crustacean https://github.com/CharlieKulak/crustacean/releases/latest/download/crustacean-web.zip
+web-support/install-client.sh py https://github.com/CharlieKulak/pysnake/releases/latest/download/pysnake-web.zip
+# or from a build you made, or a zip of one:
+web-support/install-client.sh mine ~/my-client/dist
 ```
 
-This builds the browser game and starts the server on port 8000:
+Restart the server after adding a client. Updating one that's already there
+takes effect straight away, and players get it the next time they load the
+page. `GET /api/clients` lists what a site serves.
+
+A server with no clients still works: it's the API only, for desktop clients.
+
+## Start it
+
+```sh
+.venv/bin/opensnake-server
+```
 
 ```
-OpenSnake server 0.3.1
+OpenSnake server 3.0.0
   data:     .../web-support/data
-  web game: .../web-support/build/opensnake/build/web
+  client:   crustacean at /
+  client:   py at /py/
   http://localhost:8000/   (Ctrl+C to stop)
-```
-
-Anything after `--serve` is passed to the server, for example
-`web-support/build.sh --serve --port 9000`.
-
-To start the server again without rebuilding:
-
-```sh
-.venv/bin/python -m opensnake.server
 ```
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--port` | `8000` | Port to listen on |
 | `--host` | `0.0.0.0` | Address to listen on (`127.0.0.1` = only this computer, e.g. behind a proxy) |
-| `--web` | `web-support/build/opensnake/build/web` | The built browser game |
 | `--data` | `web-support/data` | Where accounts and records are stored |
+| `--clients` | `web-support/clients` | The web clients, one folder each |
+| `--default-client` | `crustacean`, if installed | The client served at `/` |
+| `--restart-week` | | Start this week over (new weekly speedruns, a fresh battle pass), then exit |
 
-**To stop it**, press Ctrl+C.
+To stop it, press Ctrl+C.
 
-### Run it as a service (Linux, systemd)
+## Run it as a service (Linux, systemd)
 
-`web-support/opensnake.service` keeps the server running in the background,
-restarts it if it crashes and starts it when the computer boots. It's set up
-for a repository at `/opt/opensnake`; if yours is elsewhere, edit the paths
-in the file first. It runs the server as its own `opensnake` user, which can
-only write to `web-support/data/`; the code stays owned by root, so set it up
-and update it as root.
+`opensnake.service` keeps the server running in the background, restarts it
+if it crashes and starts it when the computer boots. It's set up for a
+repository at `/opt/opensnake`; if yours is elsewhere, edit the paths in the
+file first. It runs the server as its own `opensnake` user, which can only
+write to `web-support/data/`. The code stays owned by root, so set it up and
+update it as root.
 
 ```sh
 cd /opt/opensnake
-PYTHON=.venv/bin/python web-support/build.sh        # build the web game (needs internet)
 useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin opensnake
 cp web-support/opensnake.service /etc/systemd/system/
-systemd-analyze verify /etc/systemd/system/opensnake.service   # optional check
 systemctl daemon-reload
 systemctl enable --now opensnake
 ```
@@ -101,55 +90,29 @@ systemctl enable --now opensnake
 | --- | --- |
 | See if it's running | `systemctl status opensnake` |
 | Watch its output | `journalctl -u opensnake -f` |
-| Restart it (after an update) | `systemctl restart opensnake` |
+| Restart it | `systemctl restart opensnake` |
 | Stop it / stop starting at boot | `systemctl stop opensnake` / `systemctl disable opensnake` |
 
-The service listens on port 8000 on every address (edit `--host` in the file
-to `127.0.0.1` if your HTTPS proxy runs on the same machine) and can only
-write to `web-support/data/`. When it's running this way, don't also start it
-with `build.sh --serve`: the port would already be in use. To run it by hand
-against the same data, stop the service and start it as the `opensnake` user,
-not root, or the database files can end up owned by root and the service won't
-be able to write them:
+To run it by hand against the same data, stop the service and start it as the
+`opensnake` user, not root. Otherwise the database files can end up owned by
+root and the service won't be able to write them:
 
 ```sh
-setpriv --reuid=opensnake --regid=opensnake --init-groups .venv/bin/python -m opensnake.server
+setpriv --reuid=opensnake --regid=opensnake --init-groups .venv/bin/opensnake-server
 ```
 
-### Updating
-
-```sh
-git pull
-.venv/bin/pip install -e ".[server]"
-PYTHON=.venv/bin/python web-support/build.sh --serve
-```
-
-With the systemd service, pull and restart (as root):
-
-```sh
-cd /opt/opensnake
-git pull
-systemctl restart opensnake
-```
-
-When the service starts it checks whether the game has changed since the web
-game was last built, and rebuilds it if so (`web-support/rebuild-if-stale.sh`,
-which needs internet). That makes the restart take a minute or so; restarts
-with nothing new are instant. If the build fails, the server still starts,
-with the previous build, and says so in `journalctl -u opensnake`.
-
-If an update adds Python dependencies, use the update script instead. It
-pulls, installs them, rebuilds and restarts:
+## Updating
 
 ```sh
 web-support/update.sh
 ```
 
-Players get the new build the next time they load the page.
+This pulls the server, installs any new dependencies, updates every client in
+`clients.list` to its latest release, and restarts the service. A client that
+can't be downloaded keeps the build it has. Accounts and records in `data/`
+are kept, and new tables and columns are added to the database automatically.
 
-Accounts and records in `web-support/data/` are kept across updates.
-
-### HTTPS (a real domain)
+## HTTPS (a real domain)
 
 Browsers on an `https://` page can only talk to an `https://`/`wss://`
 server. Run the OpenSnake server on a local port and put your usual HTTPS
@@ -188,49 +151,26 @@ server {
 Behind a proxy, start the server with `--host 127.0.0.1` so it's only
 reachable through the proxy.
 
-### Accounts and records data
+## The data
 
-Everything is in one SQLite file, `web-support/data/opensnake.db`:
+Everything is in one SQLite file, `web-support/data/opensnake.db`. It holds:
 
-- accounts (usernames and salted, hashed passwords), login sessions
-- every verified speedrun run, used for the leaderboards and world records
-- profiles (including uploaded profile pictures, small PNGs), snake points
-  (with a ledger of every change), owned skins and packs, friends, messages
-  between friends, ranks and shared community categories
-
-Updating from 1.x adds the new tables and columns to an existing file
-automatically, keeping everyone's accounts and records.
+- accounts (usernames and salted, hashed passwords) and login sessions;
+- every verified speedrun;
+- profiles and pictures;
+- snake points, with a ledger of every change;
+- owned items, market listings, the battle pass and daily challenges;
+- friends and messages;
+- ranks, and community categories with their upvotes.
 
 Back up that file to keep your players' accounts and records. Delete it (with
 the server stopped) to start fresh.
-
-## Playing on the website
-
-- Click the page once to start (browsers need a click before game sound).
-- **Online** in the menu (or **O**) shows this site's server, your account,
-  and versus. You stay logged in on that browser until you log out.
-- While you're in a match, the browser tab's title shows the match code.
-- **Display** picks the canvas resolution (16:9 sizes) or **Fullscreen**
-  (also **F11**).
-- There's no Quit button; close the tab instead.
-
-## The release download
-
-Each release includes `OpenSnake-<version>-web.zip`: the browser game,
-already built, plus `serve.py`. That plays fine for single-player, but it's
-static files only, so there are no accounts, site records or versus. Unzip it
-and run `python3 serve.py` inside the folder. For the online features, run
-the full server from the repository as described above.
 
 ## Troubleshooting
 
 | Problem | Fix |
 | --- | --- |
 | `No module named aiohttp` | Run the first-time setup: `.venv/bin/pip install -e ".[server]"` |
-| `No module named pygbag` | `.venv/bin/pip install pygbag` |
 | `Address already in use` | Another server uses the port. Stop it, or use `--port 9000` |
-| Online screen says the website doesn't run the OpenSnake server | The site is being served by something else (e.g. `serve.py` or a static host). Start `opensnake.server` |
+| The site shows a 404 at `/` | No web client is installed. See "Web clients" above |
 | Versus can't connect, but logging in works | Your HTTPS proxy isn't passing WebSockets on `/ws`. See the nginx example above |
-| The website still shows the old version after `git pull` | Restart the service (it rebuilds on start), or run `web-support/update.sh`. Check `journalctl -u opensnake` for build errors |
-| Grey page that never starts | Click the page. If it still doesn't start, add `?-i` to the address to show pygbag's console |
-| The game needs internet the first time | It downloads pygbag's Python runtime from `pygame-web.github.io` |

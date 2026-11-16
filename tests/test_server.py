@@ -57,37 +57,52 @@ class ShutdownTests(ServerTestCase):
         self.client = await self.make_client(Path(self.tmp.name) / "a")  # asyncTearDown closes this one
 
 
-class CacheTests(ServerTestCase):
-    async def test_browsers_revalidate_the_web_game(self):
-        web_dir = Path(self.tmp.name) / "web"
-        web_dir.mkdir()
-        (web_dir / "index.html").write_text("<html></html>")
-        (web_dir / "opensnake.apk").write_bytes(b"new build")
-        client = TestClient(TestServer(Server(Path(self.tmp.name) / "w", web_dir).app()))
+class WebClientTests(ServerTestCase):
+    """The site serves web clients from web-support/clients/: the default one at /, each at /<name>/."""
+
+    async def start(self, default=None, names=("crustacean", "py")):
+        root = Path(self.tmp.name) / "clients"
+        for name in names:
+            (root / name).mkdir(parents=True)
+            (root / name / "index.html").write_text(f"<html>{name}</html>")
+            (root / name / f"{name}.wasm").write_bytes(b"build")
+        (root / "notes.txt").write_text("not a client")  # (files and folders without index.html are skipped)
+        (root / "empty").mkdir()
+        client = TestClient(TestServer(Server(Path(self.tmp.name) / "w", root, default).app()))
         await client.start_server()
+        return client
+
+    async def test_clients_are_served_with_the_default_at_the_root(self):
+        client = await self.start()
         try:
-            resp = await client.get("/opensnake.apk")
-            self.assertEqual(resp.headers["Cache-Control"], "no-cache")
-            resp = await client.get("/opensnake.apk", headers={"If-None-Match": resp.headers["ETag"]})
-            self.assertEqual(resp.status, 304)  # unchanged builds aren't downloaded again
-            self.assertEqual((await client.get("/"))
-                             .headers["Cache-Control"], "no-store")
+            r = await client.get("/")
+            self.assertEqual((await r.text(), r.headers["Cache-Control"]), ("<html>crustacean</html>", "no-store"))
+            self.assertEqual(await (await client.get("/py/")).text(), "<html>py</html>")
+            r = await client.get("/py/py.wasm")
+            self.assertEqual(r.headers["Cache-Control"], "no-cache")
+            r = await client.get("/py/py.wasm", headers={"If-None-Match": r.headers["ETag"]})
+            self.assertEqual(r.status, 304)  # unchanged builds aren't downloaded again
+            for old, new in (("/py", "/py/"), ("/rs/", "/"), ("/rs", "/")):
+                r = await client.get(old, allow_redirects=False)
+                self.assertEqual((r.status, r.headers["Location"]), (302, new))
+            listing = await (await client.get("/api/clients")).json()
+            self.assertEqual(listing["default"], "crustacean")
+            self.assertEqual([(c["name"], c["path"]) for c in listing["clients"]], [("crustacean", "/"), ("py", "/py/")])
+            self.assertEqual((await client.get("/api/info")).status, 200)
         finally:
             await client.close()
 
-    def test_stale_build_is_noticed(self):
-        import os
-        from opensnake.server import stale_build
-        web_dir = Path(self.tmp.name) / "web"
-        web_dir.mkdir()
-        apk = web_dir / "opensnake-0123456789ab.tar.gz"
-        apk.write_bytes(b"build")
-        os.utime(apk, (0, 0))  # built long before the code
-        self.assertTrue(stale_build(web_dir))
-        now = 4_000_000_000
-        os.utime(apk, (now, now))  # built after it
-        self.assertFalse(stale_build(web_dir))
-        self.assertFalse(stale_build(None))
+    async def test_choosing_the_default_and_no_clients(self):
+        client = await self.start(default="py")
+        try:
+            self.assertEqual(await (await client.get("/")).text(), "<html>py</html>")
+            self.assertEqual(await (await client.get("/crustacean/")).text(), "<html>crustacean</html>")
+        finally:
+            await client.close()
+        with self.assertRaises(ValueError):
+            Server(Path(self.tmp.name) / "x", Path(self.tmp.name) / "clients", "nope")
+        server = Server(Path(self.tmp.name) / "y", Path(self.tmp.name) / "nothing-here")  # API only
+        self.assertEqual((server.clients, server.default_client), ({}, None))
 
 
 class AccountTests(ServerTestCase):

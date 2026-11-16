@@ -1,8 +1,11 @@
-"""OpenSnake server: the web game, accounts, world records and versus multiplayer.
+"""OpenSnake server: accounts, snake points, world records, versus and the site's web clients.
 
 Run it on the computer that hosts your OpenSnake website:
 
-    python -m opensnake.server --port 8000
+    opensnake-server --port 8000        (or: python -m opensnake)
+
+Any game that speaks the API below is a client: Crustacean and PySnake are two.
+The site serves the web builds in web-support/clients/ (see web-support/README.md).
 
 Everything it stores (accounts, records) lives in its own data folder, so two
 websites running their own server have separate logins and leaderboards.
@@ -42,6 +45,7 @@ HTTP API (JSON):
     GET  /api/messages/{name}?before=id          -> {messages: [...]} with a friend (marks them read)
     POST /api/messages        {to, body}         -> send a friend a message (also pushed live as "dm")
     GET  /api/info                               -> {server, version, site}
+    GET  /api/clients                            -> {default, clients: [{name, path}]}: the site's web clients
     GET  /api/records                            -> {records: {category: {time_ms, player, date}}}
     GET  /api/leaderboard/{category}             -> {entries: [{player, time_ms, date}]}
     POST /api/runs      (Authorization: Bearer)  run file -> {valid, message, time_ms, rank, wr, pb}
@@ -77,9 +81,11 @@ from .speedrun import (CATEGORY_BY_ID, CUSTOM_PREFIX, WEEKLY_PREFIX, category_de
 from .weeks import previous_week, time_left, week_end, week_id, week_start
 
 REPO = Path(__file__).resolve().parents[1]
-DEFAULT_WEB = REPO / "web-support" / "build" / "opensnake" / "build" / "web"
 DEFAULT_DATA = REPO / "web-support" / "data"
-DEFAULT_RS = REPO / "web-support" / "rs"
+# Web clients the site serves: one folder each (with an index.html), served at /<folder>/
+DEFAULT_CLIENTS = REPO / "web-support" / "clients"
+CLIENT_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+PREFERRED_CLIENTS = ["crustacean", "py"]  # the default client (at /), if there and no other is chosen
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,20}$")
 MIN_PASSWORD = 4
@@ -1122,11 +1128,20 @@ class Room:
 # ---- the server ---------------------------------------------------------------------
 
 class Server:
-    def __init__(self, data_dir: Path, web_dir: Path | None, rs_dir: Path | None = None):
+    def __init__(self, data_dir: Path, clients_dir: Path | None = None, default_client: str | None = None):
         self.db = Database(data_dir / "opensnake.db")
-        self.web_dir = web_dir if web_dir and (web_dir / "index.html").is_file() else None
-        # The Rust version of the game (OpenSnake in Rust): the main game at / when it's there
-        self.rs_dir = rs_dir if rs_dir and (rs_dir / "index.html").is_file() else None
+        # The web clients this site serves (name -> folder): any game that speaks the
+        # OpenSnake API can be one. The default one is served at /, every one at /<name>/.
+        self.clients: dict[str, Path] = {}
+        if clients_dir and clients_dir.is_dir():
+            for d in sorted(clients_dir.iterdir()):
+                if d.is_dir() and CLIENT_NAME.match(d.name) and (d / "index.html").is_file() \
+                        and d.name not in ("api", "ws"):
+                    self.clients[d.name] = d
+        if default_client and default_client not in self.clients:
+            raise ValueError(f"No web client called {default_client!r} in {clients_dir}")
+        self.default_client = default_client or next(
+            (c for c in PREFERRED_CLIENTS if c in self.clients), next(iter(self.clients), None))
         self.rooms: dict[str, Room] = {}
         self.next_pid = 1
         self.connected: dict[int, set[Player]] = {}  # account id -> its open connections (who's online)
@@ -1215,18 +1230,19 @@ class Server:
         # With the Rust version built, it's the main game at / and the Python (pygame)
         # game moves to /py/; without it, the Python game stays at /. (Folders go
         # before "/", which would catch them too.)
-        if self.rs_dir:
-            r.add_get("/rs", self.to_root)  # (where the Rust game used to be)
+        r.add_get("/api/clients", self.list_clients)
+        # Every client at /<name>/ (folders go before "/", which would catch them too)...
+        for name, folder in self.clients.items():
+            r.add_get(f"/{name}", self.to_client_folder)
+            r.add_get(f"/{name}/", self.client_index)
+            r.add_static(f"/{name}/", folder)
+        if "rs" not in self.clients:  # (where the Rust game used to be)
+            r.add_get("/rs", self.to_root)
             r.add_get("/rs/", self.to_root)
-            if self.web_dir:
-                r.add_get("/py", self.to_py)
-                r.add_get("/py/", self.index)
-                r.add_static("/py/", self.web_dir)
-            r.add_get("/", self.rs_index)
-            r.add_static("/", self.rs_dir)
-        elif self.web_dir:
-            r.add_get("/", self.index)
-            r.add_static("/", self.web_dir)
+        # ...and the default one at /.
+        if self.default_client:
+            r.add_get("/", self.client_index)
+            r.add_static("/", self.clients[self.default_client])
         return app
 
     @staticmethod
@@ -1253,20 +1269,24 @@ class Server:
         self.rooms.clear()
         self.db.close()
 
-    # -- web game
-    async def index(self, request: web.Request) -> web.StreamResponse:
-        return web.FileResponse(self.web_dir / "index.html", headers={"Cache-Control": "no-store"})
-
-    async def rs_index(self, request: web.Request) -> web.StreamResponse:
-        return web.FileResponse(self.rs_dir / "index.html", headers={"Cache-Control": "no-store"})
+    # -- web clients
+    async def client_index(self, request: web.Request) -> web.StreamResponse:
+        name = request.path.strip("/") or self.default_client
+        return web.FileResponse(self.clients[name] / "index.html", headers={"Cache-Control": "no-store"})
 
     @staticmethod
     async def to_root(request: web.Request) -> web.StreamResponse:
         raise web.HTTPFound("/")
 
     @staticmethod
-    async def to_py(request: web.Request) -> web.StreamResponse:
-        raise web.HTTPFound("/py/")  # (its files are relative to the folder)
+    async def to_client_folder(request: web.Request) -> web.StreamResponse:
+        raise web.HTTPFound(request.path + "/")  # (a client's files are relative to its folder)
+
+    async def list_clients(self, request: web.Request) -> web.Response:
+        """The web clients this site serves, so players (and other clients) can find them."""
+        return web.json_response({"default": self.default_client, "clients": [
+            {"name": name, "path": "/" if name == self.default_client else f"/{name}/", "folder": f"/{name}/"}
+            for name in self.clients]})
 
     # -- accounts
     async def info(self, request: web.Request) -> web.Response:
@@ -1855,29 +1875,16 @@ class Server:
             await room.broadcast(room.info())
 
 
-def stale_build(web_dir: Path | None) -> bool:
-    """True if the game has changed since the web game was built (e.g. pulled but not rebuilt).
-
-    Looks at everything that goes into the build: the game package (code, images,
-    sounds, packs) except the server, and the browser entry point."""
-    builds = list(web_dir.glob("opensnake*.tar.gz")) if web_dir else []
-    if not builds:
-        return False
-    code = Path(__file__).parent
-    files = [f for f in code.rglob("*") if f.is_file() and f.name != "server.py" and "__pycache__" not in f.parts]
-    files.append(REPO / "web-support" / "main.py")
-    newest = max(f.stat().st_mtime for f in files if f.exists())
-    return newest > max(f.stat().st_mtime for f in builds)
-
-
 def main(argv=None) -> None:
-    parser = argparse.ArgumentParser(prog="opensnake.server", description="OpenSnake website + game server")
+    parser = argparse.ArgumentParser(prog="opensnake-server", description="OpenSnake server: accounts, records, "
+                                     "versus and the website's web clients")
     parser.add_argument("--host", default="0.0.0.0", help="address to listen on (default: all)")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--web", type=Path, default=DEFAULT_WEB, help="folder with the built web game")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA, help="folder for accounts and records")
-    parser.add_argument("--rs", type=Path, default=DEFAULT_RS,
-                        help="folder with the Rust game's web build (served at /, moving the Python game to /py/)")
+    parser.add_argument("--clients", type=Path, default=DEFAULT_CLIENTS,
+                        help="folder of web clients, one folder each, served at /<folder>/ (default: "
+                             "web-support/clients)")
+    parser.add_argument("--default-client", help="the client served at / (default: crustacean, if there)")
     parser.add_argument("--restart-week", action="store_true",
                         help="start this week over (new weekly speedruns, a fresh battle pass), then exit")
     args = parser.parse_args(argv)
@@ -1886,15 +1893,17 @@ def main(argv=None) -> None:
         print(f"This week is now {db.restart_week()}: new weekly speedruns and a fresh battle pass until Monday.")
         db.close()
         return
-    server = Server(args.data, args.web, args.rs)
+    try:
+        server = Server(args.data, args.clients, args.default_client)
+    except ValueError as e:
+        parser.error(str(e))
     print(f"OpenSnake server {__version__}")
     print(f"  data:     {args.data}")
-    print(f"  web game: {server.web_dir or 'not built (run web-support/build.sh); API only'}")
-    if server.rs_dir:
-        print(f"  Rust game: {server.rs_dir} (at /; the Python game is at /py/)")
-    if stale_build(server.web_dir):
-        print("  WARNING: the game code is newer than the web game build, so the website still runs the "
-              "old version. Rebuild it: web-support/build.sh (or web-support/update.sh)")
+    if server.clients:
+        for name in server.clients:
+            print(f"  client:   {name} at {'/' if name == server.default_client else f'/{name}/'}")
+    else:
+        print(f"  clients:  none in {args.clients} (API only; see web-support/README.md)")
     print(f"  http://localhost:{args.port}/   (Ctrl+C to stop)", flush=True)
     web.run_app(server.app(), host=args.host, port=args.port, print=None)
 

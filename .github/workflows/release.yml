@@ -1,144 +1,42 @@
-name: Release builds
+name: Tests and releases
 
-# Pushing a version tag (e.g. v0.1.0) builds standalone games for Linux,
-# Windows and macOS plus the Python packages, and attaches them all to a
-# draft GitHub release for review. Run it by hand from the Actions tab to just
-# build (the files appear under the run's artifacts).
+# Every push runs the tests. A version tag (v3.0.0) also builds the Python
+# package (wheel and source) and attaches it to a draft GitHub release.
 on:
   push:
-    tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
-env:
-  PYINSTALLER_VERSION: "6.22.3"
-  SDL_VIDEODRIVER: dummy
-  SDL_AUDIODRIVER: dummy
-
 jobs:
-  standalone:
-    name: Standalone (${{ matrix.label }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            label: linux-x86_64
-          - os: windows-latest
-            label: windows-x86_64
-          - os: macos-latest
-            label: macos-arm64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7.0.1
-
-      - uses: actions/setup-python@v7.0.0
-        with:
-          python-version: "3.12"
-
-      - name: Install
-        # [server] so the server tests run too; the standalone game doesn't bundle it
-        run: python -m pip install ".[server]" "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
-
-      - name: Test
-        run: python -m unittest discover tests
-
-      - name: Build
-        shell: bash
-        run: |
-          # macOS gets an .app bundle; Linux and Windows get a single file.
-          if [ "$RUNNER_OS" = "macOS" ]; then mode=--onedir; else mode=--onefile; fi
-          pyinstaller --noconfirm --clean --windowed $mode --name OpenSnake \
-            --paths . --collect-submodules opensnake --collect-data opensnake \
-            --collect-submodules websockets --exclude-module opensnake.server --exclude-module aiohttp \
-            packaging/launcher.py
-
-      - name: Package
-        shell: bash
-        run: |
-          name="OpenSnake-${GITHUB_REF_NAME#v}-${{ matrix.label }}"
-          [ "$GITHUB_REF_TYPE" = "tag" ] || name="OpenSnake-dev-${{ matrix.label }}"
-          mkdir -p "out/$name"
-          # Licenses and credits travel with every download (Twemoji is CC-BY).
-          cp README.md LICENSE CREDITS.md "out/$name/"
-          case "$RUNNER_OS" in
-            Linux)
-              cp dist/OpenSnake packaging/linux/install.sh packaging/linux/opensnake.desktop \
-                 packaging/linux/opensnake.svg packaging/linux/opensnake-256.png "out/$name/"
-              tar -czf "$name.tar.gz" -C out "$name" ;;
-            Windows)
-              cp dist/OpenSnake.exe "out/$name/"
-              (cd out && 7z a -tzip "../$name.zip" "$name" > /dev/null) ;;
-            macOS)
-              cp -R dist/OpenSnake.app "out/$name/"
-              ditto -c -k --keepParent "out/$name" "$name.zip" ;;
-          esac
-          ls -la "$name".*
-
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: standalone-${{ matrix.label }}
-          path: |
-            OpenSnake-*.tar.gz
-            OpenSnake-*.zip
-
-  python-packages:
-    name: Wheel and source archive
+  test:
+    name: Tests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
-      - run: python -m pip install build
-      - run: python -m build
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: python-packages
-          path: dist/*
-
-  web:
-    name: Browser version
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-python@v7.0.0
-        with:
-          python-version: "3.12"
-      - run: python -m pip install "pygbag==0.9.3"
-      - name: Build
-        run: PYTHON=python web-support/build.sh
-      - name: Package
-        run: |
-          name="OpenSnake-${GITHUB_REF_NAME#v}-web"
-          [ "$GITHUB_REF_TYPE" = "tag" ] || name="OpenSnake-dev-web"
-          mkdir -p "out/$name"
-          cp -R web-support/build/opensnake/build/web/. "out/$name/"
-          cp web-support/serve.py web-support/README.md LICENSE CREDITS.md "out/$name/"
-          (cd out && zip -qr "../$name.zip" "$name")
-          ls -la "$name.zip"
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: web
-          path: OpenSnake-*-web.zip
+      - run: python -m pip install ".[server]"
+      - run: python -m unittest discover tests
 
   release:
     name: Draft release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [standalone, python-packages, web]
+    needs: test
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v8.0.2
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
         with:
-          path: files
-          merge-multiple: true
+          python-version: "3.12"
+      - run: python -m pip install build && python -m build
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -la files
-          gh release create "$GITHUB_REF_NAME" files/* \
+          gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" --draft \
             --title "OpenSnake ${GITHUB_REF_NAME}" --generate-notes

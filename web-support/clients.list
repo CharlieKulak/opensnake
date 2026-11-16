@@ -1,0 +1,5 @@
+# The web clients this site serves, which web-support/update.sh keeps up to date:
+# one per line, "name source" (see install-client.sh). Each is served at /name/,
+# and the server serves crustacean at / too (or the one named with --default-client).
+crustacean https://github.com/CharlieKulak/crustacean/releases/latest/download/crustacean-web.zip
+py https://github.com/CharlieKulak/pysnake/releases/latest/download/pysnake-web.zip

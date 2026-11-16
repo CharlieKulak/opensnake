@@ -1,4 +1,4 @@
-# systemd service for the OpenSnake server (website, accounts, records, versus).
+# systemd service for the OpenSnake server (accounts, records, versus, web clients).
 #
 # Set up for a repository cloned to /opt/opensnake with its .venv created as
 # described in web-support/README.md, and an opensnake system user to run it.
@@ -11,11 +11,10 @@
 #   systemctl daemon-reload
 #   systemctl enable --now opensnake
 #
-# The service builds the web game when it starts if the game has changed
-# (needs internet), so updating is: git pull, then systemctl restart opensnake.
+# Updating: web-support/update.sh (pulls, updates the web clients, restarts).
 
 [Unit]
-Description=OpenSnake server (website, accounts, records, versus)
+Description=OpenSnake server (accounts, records, versus, web clients)
 After=network-online.target
 Wants=network-online.target
 # Keep retrying if the address isn't up yet at boot (the bind fails until it is).
@@ -30,12 +29,6 @@ WorkingDirectory=/opt/opensnake
 # which needs the folder to exist and makes everything else read-only).
 # The opensnake user owns only this folder; the code stays root's.
 ExecStartPre=+/usr/bin/install -d -o opensnake -g opensnake /opt/opensnake/web-support/data
-# Rebuild the browser game if the game changed (after a git pull, say), so a
-# restart is all an update needs. Runs as root (the build is root's, like the
-# code). "-": if the build fails (no internet), start anyway with the old one.
-ExecStartPre=-+/opt/opensnake/web-support/rebuild-if-stale.sh
-# Starting can take a few minutes when it rebuilds.
-TimeoutStartSec=15min
 # Listens on every address. Use 127.0.0.1 instead for a proxy on this same
 # machine.
 ExecStart=/opt/opensnake/.venv/bin/python -m opensnake.server --host 0.0.0.0 --port 8000

@@ -42,36 +42,10 @@ class CatalogueTests(ServerTestCase):
         self.assertEqual(cos.CRATE_BY_ID["royal"].price, 500_000)
 
     def test_packs(self):
-        from opensnake.addons import BUILTIN_PACKS
-        for pack in cos.PACKS:  # every catalogue pack ships with the game, locked until owned
-            meta = (BUILTIN_PACKS / pack.id / "pack.json").read_text()
-            self.assertIn('"locked": true', meta, pack.id)
         sold = [p for p in cos.PACKS if p.price]
         self.assertEqual(len(sold), 4)
         self.assertTrue(all(p.rarity not in ("epic", "legendary", "mythic") for p in sold))
 
-    def test_every_skin_draws_on_a_moving_snake(self):
-        """Regression: gradient skins made an invalid colour for the cell the tail slides out of,
-        which crashed the game as soon as the snake moved (it froze in the browser)."""
-        import os
-        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-        import pygame
-        pygame.init()
-        pygame.display.set_mode((10, 10))
-        from opensnake.game import Game
-        from opensnake.render import Renderer, View
-        r = Renderer()
-        for skin in cos.SKINS:
-            g = Game(10, 9, (), 1, rng=random.Random(1))
-            g.started = True
-            for _ in range(3):
-                g.step()
-                for t in (0.0, 0.5, 0.99):
-                    r.draw_board(g, t, 1000.0, ((61, 111, 232), (122, 162, 255)),
-                                 View(32, 0, 0, 320, 288, 10, 9), skin=skin)
-            for i in range(14):  # past the end of the body too
-                c = cos.skin_color(skin, i, 4, 777.0)
-                self.assertTrue(all(0 <= v <= 255 for v in c), (skin.id, i, c))
 
     def test_skin_colours_are_valid(self):
         for s in cos.SKINS:
@@ -372,39 +346,6 @@ class MessageTests(ServerTestCase):
         await wb.close()
 
 
-class ClientRobustnessTests(ServerTestCase):
-    """The game side: a bad reply can't freeze the game, and downloaded pictures decode."""
-
-    def setUp(self):
-        import os
-        import tempfile
-        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-        os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-        self.cfg = tempfile.TemporaryDirectory()
-        os.environ["OPENSNAKE_CONFIG_DIR"] = self.cfg.name
-        from opensnake.app import App
-        self.app = App()
-
-    def tearDown(self):
-        self.cfg.cleanup()
-
-    def test_a_failing_reply_handler_does_not_stop_the_game(self):
-        class Done:
-            done = ok = True
-            def poll(self):
-                return True
-        later = []
-        on = self.app.online
-        on.requests = [(Done(), lambda r: 1 / 0), (Done(), lambda r: later.append("ran"))]
-        on.poll()  # used to raise, which stopped the main loop in the browser
-        self.assertEqual(later, ["ran"])
-        self.assertIn("went wrong", on.message)
-
-    def test_pictures_decode(self):
-        import base64
-        from opensnake.net import decode_png, load_picture
-        img = decode_png(base64.b64decode(load_picture("packaging/linux/opensnake-256.png")))
-        self.assertEqual(img.get_size(), (128, 128))
 
 
 class RankingTests(ServerTestCase):
@@ -812,48 +753,6 @@ class RunCheckTests(ServerTestCase):
         self.assertFalse(verify({**run, "time_ms": "5000"})[0])
 
 
-class RustGameTests(ServerTestCase):
-    async def test_the_rust_game_is_at_the_root_and_the_python_one_at_py(self):
-        from pathlib import Path
-        from aiohttp.test_utils import TestClient, TestServer
-        from opensnake.server import Server
-        rs, py = Path(self.tmp.name) / "rs", Path(self.tmp.name) / "py"
-        for d, name in ((rs, "rust"), (py, "python")):
-            d.mkdir()
-            (d / "index.html").write_text(f"<html>{name}</html>")
-        (rs / "opensnake.wasm").write_bytes(b"\0asm")
-        (py / "opensnake-abc.apk").write_bytes(b"apk")
-        server = Server(Path(self.tmp.name) / "b", py, rs)
-        client = TestClient(TestServer(server.app()))
-        await client.start_server()
-        try:
-            r = await client.get("/")
-            self.assertEqual((r.status, await r.text()), (200, "<html>rust</html>"))
-            self.assertEqual((await client.get("/opensnake.wasm")).status, 200)
-            r = await client.get("/py/")
-            self.assertEqual((r.status, await r.text()), (200, "<html>python</html>"))
-            self.assertEqual((await client.get("/py/opensnake-abc.apk")).status, 200)
-            for old, new in (("/py", "/py/"), ("/rs/", "/"), ("/rs", "/")):
-                r = await client.get(old, allow_redirects=False)
-                self.assertEqual((r.status, r.headers["Location"]), (302, new))
-            self.assertEqual((await client.get("/api/info")).status, 200)
-        finally:
-            await client.close()
-
-    async def test_without_the_rust_game_the_python_one_stays_at_the_root(self):
-        from pathlib import Path
-        from aiohttp.test_utils import TestClient, TestServer
-        from opensnake.server import Server
-        py = Path(self.tmp.name) / "py"
-        py.mkdir()
-        (py / "index.html").write_text("<html>python</html>")
-        server = Server(Path(self.tmp.name) / "c", py, Path(self.tmp.name) / "nothing")
-        client = TestClient(TestServer(server.app()))
-        await client.start_server()
-        try:
-            self.assertEqual(await (await client.get("/")).text(), "<html>python</html>")
-        finally:
-            await client.close()
 
 
 class CommunityVoteTests(ServerTestCase):

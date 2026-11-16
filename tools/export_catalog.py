@@ -1,16 +1,15 @@
-"""Export the game's catalogue (and test data) for OpenSnake in Rust.
+"""Export the catalogue (and test data) for clients written in other languages.
 
-The Rust game embeds what this writes, so Python stays the single source of
-truth for skins, packs, loot boxes, ranks, modes and speedrun categories:
+Crustacean (Rust) embeds what this writes, so these rules stay the single source
+of truth for skins, packs, loot boxes, ranks, modes and speedrun categories:
 
-    python tools/export_catalog.py ../opensnake-rs/assets
+    python tools/export_catalog.py ../crustacean/assets
 
 Writes:
-  catalog.json        everything the game shows or plays by
-  golden.json         Python's random numbers and recorded runs, which the Rust
-                      game must reproduce exactly (the server re-checks every
-                      run by replaying it in Python)
-  packs/<id>/         each built-in pack's pack.json, with its SVG images as PNGs
+  catalog.json        everything a game shows or plays by
+  golden.json         Python's random numbers and recorded runs, which a client
+                      must reproduce exactly (the server re-checks every run by
+                      replaying it with these rules)
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from __future__ import annotations
 import json
 import os
 import random
-import shutil
 import sys
 from pathlib import Path
 
@@ -30,10 +28,8 @@ from opensnake import __version__, cosmetics as cos  # noqa: E402
 from opensnake.game import game_to_state  # noqa: E402
 from opensnake.modes import (CONFLICTS, MODES, SNAKE_COLORS, SPEED_TICKS, VERSUS_MODES,  # noqa: E402
                              VERSUS_SIZES)
-from opensnake.speedrun import CATEGORIES, Run, category_def, make_custom, weekly_categories  # noqa: E402
+from opensnake.speedrun import CATEGORIES, category_def, make_custom, weekly_categories  # noqa: E402
 
-PACK_DIR = ROOT / "opensnake" / "packs"
-IMAGE_SIZE = 128
 
 
 def hexcol(c) -> str | None:
@@ -108,32 +104,12 @@ def golden() -> dict:
     return {"rng": rng_cases, "runs": runs}
 
 
-def export_packs(out: Path) -> None:
-    import pygame
-    pygame.init()
-    for folder in sorted(PACK_DIR.iterdir()):
-        if not (folder / "pack.json").is_file():
-            continue
-        dest = out / "packs" / folder.name
-        if dest.exists():
-            shutil.rmtree(dest)
-        dest.mkdir(parents=True)
-        shutil.copy(folder / "pack.json", dest / "pack.json")
-        for f in sorted(folder.iterdir()):
-            if f.suffix == ".svg":
-                img = pygame.image.load_sized_svg(str(f), (IMAGE_SIZE, IMAGE_SIZE))
-                pygame.image.save(img, str(dest / (f.stem + ".png")))
-            elif f.suffix in (".ogg", ".wav"):
-                shutil.copy(f, dest / f.name)
-
-
 def main() -> None:
-    out = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT.parent / "opensnake-rs" / "assets")
+    out = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT.parent / "crustacean" / "assets")
     out.mkdir(parents=True, exist_ok=True)
     (out / "catalog.json").write_text(json.dumps(catalog(), indent=1))
     (out / "golden.json").write_text(json.dumps(golden()))
-    export_packs(out)
-    print(f"Wrote the catalogue, golden data and {len(list((out / 'packs').iterdir()))} packs to {out}")
+    print(f"Wrote the catalogue and golden data to {out}")
 
 
 if __name__ == "__main__":

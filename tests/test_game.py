@@ -228,28 +228,6 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(g.snakes[0].queue, [])
 
 
-class PathTests(unittest.TestCase):
-    def test_head_moves_without_jumps_through_turns(self):
-        import math
-        import os
-        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-        from opensnake.render import build_snake_path
-        g = make()
-        clear_apples(g)
-        g.step()  # get moving first: before the first step there is nothing to interpolate
-        heads = []
-        g.input("down")
-        g.input("left")
-        for _ in range(4):
-            for t in (0.0, 0.25, 0.5, 0.75):
-                if t >= 0.5:
-                    g.plan()
-                path, s_head, _ = build_snake_path(g, g.snakes[0], g.prev[0], t)
-                heads.append(path.point(s_head)[:2])
-            g.step()
-        steps = [math.dist(a, b) for a, b in zip(heads, heads[1:])]
-        self.assertLess(max(steps), 0.26)
-        self.assertGreater(min(steps), 0.18)
 
 
 if __name__ == "__main__":

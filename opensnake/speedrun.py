@@ -1,15 +1,10 @@
-"""Speedrun mode: fixed categories, an in-game timer, replays and records.
+"""Speedruns: the categories, the in-game timer, run files and replays.
 
 Times are in-game time (IGT): the sum of the tick lengths of every move made,
 so a run's time doesn't depend on frame rate or how busy the computer is.
-Each run is seeded and its inputs recorded, so a saved run can be replayed
-exactly to verify its time (``opensnake --verify run.json``).
-
-Records:
-  PR  personal record, kept in the player's settings file.
-  WR  world record, read from ``records.json``. The copy bundled with the
-      game is refreshed from the project's GitHub repository when online, so
-      updating that file there updates every player's WR.
+Each run is seeded and its inputs recorded, so the server replays every run it's
+sent (``verify``) to check its time before it counts. Clients must play by
+exactly these rules, random numbers included, for their runs to verify.
 """
 
 from __future__ import annotations
@@ -18,8 +13,6 @@ import hashlib
 import json
 import random
 import sys
-import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,8 +22,6 @@ from .game import Event, Game
 RUN_FORMAT = 1
 CUSTOM_PREFIX = "custom-"
 CUSTOM_FILE_FORMAT = 1
-RECORDS_URL = "https://raw.githubusercontent.com/CharlieKulak/opensnake/main/opensnake/records.json"
-BUNDLED_RECORDS = Path(__file__).parent / "records.json"
 
 
 @dataclass(frozen=True)
@@ -377,88 +368,3 @@ def verify(data: dict) -> tuple[bool, str]:
         return False, (f"{name}: claimed {format_time(claimed)} but the replay finishes in "
                        f"{format_time(run.elapsed)}")
     return True, f"{name}: valid, {format_time(run.elapsed)}"
-
-
-# ---- world records ----------------------------------------------------------
-
-class Records:
-    """World records by category id: {"time_ms", "player", "date", ...}.
-
-    Starts from the bundled records.json (or a cached newer copy) and, when
-    allowed, refreshes from GitHub in a background thread.
-    """
-
-    def __init__(self, cache_path: Path | None = None):
-        self.cache_path = cache_path
-        self.records: dict[str, dict] = {}
-        self.updated: str = ""
-        self.source = "none"
-        self._loaded = False  # whether any records file has been accepted yet
-        self._load(BUNDLED_RECORDS, "bundled")
-        if cache_path:
-            self._load(cache_path, "cached")
-
-    def _accept(self, data: dict, source: str) -> bool:
-        if not isinstance(data, dict) or not isinstance(data.get("records"), dict):
-            return False
-        updated = str(data.get("updated", ""))
-        if self._loaded and updated <= self.updated:
-            return False  # not newer than what we have
-        clean = {}
-        for cid, rec in data["records"].items():
-            known = cid in CATEGORY_BY_ID or (isinstance(cid, str) and cid.startswith(CUSTOM_PREFIX))
-            if known and isinstance(rec, dict) and isinstance(rec.get("time_ms"), int):
-                clean[cid] = rec
-        self.records, self.updated, self.source = clean, updated, source
-        self._loaded = True
-        return True
-
-    def _load(self, path: Path, source: str) -> None:
-        try:
-            self._accept(json.loads(path.read_text()), source)
-        except (OSError, ValueError):
-            pass
-
-    def get(self, category_id: str) -> dict | None:
-        return self.records.get(category_id)
-
-    def set_server(self, records: dict, site: str) -> None:
-        """Use a website's own leaderboard (from its OpenSnake server) instead of records.json."""
-        if not hasattr(self, "_offline"):
-            self._offline = (self.records, self.updated, self.source)
-        clean = {cid: r for cid, r in records.items()
-                 if isinstance(r, dict) and isinstance(r.get("time_ms"), int)}
-        self.records, self.updated, self.source = clean, "", f"site:{site}"
-
-    def clear_server(self) -> None:
-        """Back to the records.json world records (e.g. after disconnecting from a site)."""
-        if hasattr(self, "_offline"):
-            self.records, self.updated, self.source = self._offline
-            del self._offline
-
-    def refresh_in_background(self, url: str = RECORDS_URL, timeout: float = 4.0) -> None:
-        def work():
-            try:
-                import urllib.request
-                with urllib.request.urlopen(url, timeout=timeout) as resp:
-                    raw = resp.read(256 * 1024)
-                data = json.loads(raw)
-                if self._accept(data, "online") and self.cache_path:
-                    self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    self.cache_path.write_text(json.dumps(data, indent=2))
-            except Exception:
-                pass  # offline or blocked: keep what we have
-        threading.Thread(target=work, daemon=True).start()
-
-
-def save_run(run: Run, folder: Path, player: str = "", game_version: str = "") -> Path | None:
-    """Write a finished run as JSON; returns the path (None if it couldn't be written)."""
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    path = folder / f"{run.category.id}-{stamp}-{round(run.elapsed)}ms.json"
-    try:
-        folder.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(run.to_json(player, game_version), indent=1))
-        return path
-    except OSError as e:
-        print(f"opensnake: could not save run: {e}", file=sys.stderr)
-        return None

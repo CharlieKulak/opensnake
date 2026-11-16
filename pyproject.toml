@@ -4,12 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opensnake"
-version = "2.6.1"
-description = "A free, open-source desktop snake game with 19 combinable game modes"
+version = "3.0.0"
+description = "OpenSnake: the server for snake games (accounts, points, records, versus) and the game rules its clients share"
 readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.10"
-dependencies = ["pygame-ce>=2.4", "websockets>=13"]
+# The game rules (opensnake.game, .speedrun, .cosmetics, ...) need nothing else, so
+# clients can depend on this package; the server itself needs aiohttp.
+dependencies = []
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Games/Entertainment :: Arcade",
@@ -17,15 +19,10 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# Only needed to run the OpenSnake server (website, accounts, records, versus).
 server = ["aiohttp>=3.9"]
 
 [project.scripts]
-opensnake = "opensnake.app:main"
+opensnake-server = "opensnake.server:main"
 
 [tool.setuptools.packages.find]
 include = ["opensnake*"]
-
-[tool.setuptools.package-data]
-opensnake = ["sounds/*.ogg", "sounds/*.wav", "images/*.svg", "images/*.txt", "records.json",
-             "packs/*/*.svg", "packs/*/*.wav", "packs/*/*.ogg", "packs/*/*.png", "packs/*/*.json"]

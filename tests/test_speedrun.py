@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from opensnake.speedrun import (CATEGORIES, CATEGORY_BY_ID, Records, Run, format_delta, format_time,
+from opensnake.speedrun import (CATEGORIES, CATEGORY_BY_ID, Run, format_delta, format_time,
                                 replay, verify)
 
 DIRS = ["up", "down", "left", "right"]
@@ -110,25 +110,6 @@ class RunTests(unittest.TestCase):
         self.assertFalse(ok)
 
 
-class RecordsTests(unittest.TestCase):
-    def test_bundled_and_newer_cache(self):
-        with tempfile.TemporaryDirectory() as d:
-            cache = Path(d) / "records.json"
-            cache.write_text(json.dumps({"updated": "2999-01-01", "records": {
-                "sprint10": {"time_ms": 9000, "player": "someone"},
-                "not_a_category": {"time_ms": 1},
-                "sprint25": {"time_ms": "fast"}}}))
-            r = Records(cache)
-            self.assertEqual(r.get("sprint10")["time_ms"], 9000)
-            self.assertIsNone(r.get("not_a_category"))
-            self.assertIsNone(r.get("sprint25"))
-
-    def test_older_cache_is_ignored(self):
-        with tempfile.TemporaryDirectory() as d:
-            cache = Path(d) / "records.json"
-            cache.write_text(json.dumps({"updated": "2000-01-01", "records": {"sprint10": {"time_ms": 1}}}))
-            r = Records(cache)
-            self.assertEqual(r.source, "bundled")
 
 
 if __name__ == "__main__":
@@ -179,29 +160,8 @@ class CustomCategoryTests(unittest.TestCase):
         self.assertEqual([c.id for c in loaded], [c.id for c in cats])
         self.assertEqual(loaded[0].name, "Fast walls")
 
-    def test_custom_world_records_are_accepted(self):
-        from opensnake.speedrun import make_custom
-        cid = make_custom(10, 9, [], 5, 1, 130).id
-        with tempfile.TemporaryDirectory() as d:
-            cache = Path(d) / "records.json"
-            cache.write_text(json.dumps({"updated": "2999-01-01",
-                                         "records": {cid: {"time_ms": 4000, "player": "x"}}}))
-            self.assertEqual(Records(cache).get(cid)["time_ms"], 4000)
 
 
-class SiteRecordsTests(unittest.TestCase):
-    def test_site_records_replace_and_restore(self):
-        r = Records(None)
-        offline = dict(r.records)
-        r.set_server({"sprint10": {"time_ms": 5000, "player": "site-hero"}, "junk": "x"}, "snake.example.com")
-        self.assertEqual(r.get("sprint10")["player"], "site-hero")
-        self.assertIsNone(r.get("junk"))
-        self.assertEqual(r.source, "site:snake.example.com")
-        r.set_server({}, "other.example.com")  # switching sites keeps the original to restore
-        self.assertIsNone(r.get("sprint10"))
-        r.clear_server()
-        self.assertEqual(r.records, offline)
-        self.assertNotEqual(r.source.split(":")[0], "site")
 
 
 class UnknownModeTests(unittest.TestCase):
