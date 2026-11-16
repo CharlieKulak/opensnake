@@ -33,7 +33,6 @@ choose with `--default-client`.
 ```sh
 # from their latest releases (this is what clients.list does):
 web-support/install-client.sh crustacean https://github.com/CharlieKulak/crustacean/releases/latest/download/crustacean-web.zip
-web-support/install-client.sh py https://github.com/CharlieKulak/pysnake/releases/latest/download/pysnake-web.zip
 # or from a build you made, or a zip of one:
 web-support/install-client.sh mine ~/my-client/dist
 ```
