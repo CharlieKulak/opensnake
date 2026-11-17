@@ -16,14 +16,14 @@ from opensnake.speedrun import CATEGORY_BY_ID, make_custom  # noqa: E402
 
 class CatalogueTests(ServerTestCase):
     def test_skins_with_the_rarest_only_in_loot_boxes(self):
-        self.assertEqual(len(cos.SKINS), 123)
-        self.assertEqual(len({s.id for s in cos.SKINS}), 123)
+        self.assertEqual(len(cos.SKINS), 137)
+        self.assertEqual(len({s.id for s in cos.SKINS}), 137)
         stands = [s for s in cos.SKINS if s.series == "Stand"]
         self.assertEqual(len(stands), 34)
         self.assertTrue(all(not s.shop for s in stands))
         for s in cos.SKINS:
             self.assertIn(s.rarity, cos.RARITIES)
-            if s.rarity in ("epic", "legendary", "mythic") or s.series in ("Pass", "Ranked"):
+            if s.rarity in ("epic", "legendary", "mythic") or s.series in ("Pass", "Ranked", "Holiday"):
                 self.assertFalse(s.shop, s.id)
             else:
                 self.assertTrue(s.shop, s.id)
@@ -784,3 +784,204 @@ class CommunityVoteTests(ServerTestCase):
         # taking an upvote back
         r = (await self.post("/api/categories/vote", {"id": portal.id, "up": False}, c))[1]
         self.assertEqual((r["votes"], r["voted"]), (1, False))
+
+
+class CommunityUploadTests(ServerTestCase):
+    async def test_making_a_community_category_without_playing_it_first(self):
+        token = await self.account()
+        rules = {"name": "  Speedy   walls ", "w": 14, "h": 12, "modes": ["wall", "gate"], "goal": 12,
+                 "fruit_count": 2, "tick_ms": 130, "fruit": "apple", "accel": 4}
+        status, r = await self.post("/api/categories", {"def": rules}, token)
+        self.assertEqual((status, r["new"], r["name"], r["creator"]), (200, True, "Speedy walls", "alice"))
+        listed = (await self.get("/api/categories?q=speedy"))[1]["categories"]
+        self.assertEqual([c["id"] for c in listed], [r["id"]])
+        self.assertEqual((listed[0]["def"]["accel"], listed[0]["def"]["modes"]), (4.0, ["gate", "wall"]))
+        # the same rules again are the same category
+        again = (await self.post("/api/categories", {"def": {**rules, "name": "Copycat"}}, token))[1]
+        self.assertEqual((again["id"], again["new"], again["name"]), (r["id"], False, "Speedy walls"))
+        bad = (await self.post("/api/categories", {"def": {**rules, "w": 2}}, token))[1]
+        self.assertIn("out of range", bad["error"])
+        self.assertEqual((await self.post("/api/categories", {"def": rules}))[0], 401)
+
+
+class HolidayCrateTests(ServerTestCase):
+    async def test_the_holiday_crate_gives_holiday_skins_only(self):
+        holiday = {f"skin:{s.id}" for s in cos.SKINS if s.series == "Holiday"}
+        self.assertEqual(len(holiday), 14)
+        self.assertEqual(holiday, cos.THEMED_ONLY)
+        rng = random.Random(4)
+        crate = cos.CRATE_BY_ID["holiday"]
+        self.assertEqual({cos.roll(crate, rng) for _ in range(3000)}, holiday)  # every one can come out
+        for other in cos.CRATES:
+            if not other.series:
+                self.assertFalse({cos.roll(other, rng) for _ in range(500)} & holiday, other.id)
+        for week in ("2026-W46", "2026-W47", "2026-W48"):  # not battle pass rewards either
+            self.assertFalse({t.get("item") for t in cos.battle_pass(week)} & holiday)
+        token = await self.account()
+        self.server.db.add_points(1, 100_000, "test")
+        status, r = await self.post("/api/store/open", {"crate": "holiday"}, token)
+        self.assertEqual(status, 200)
+        self.assertIn(r["item"], holiday)
+        c = cos.skin_color(cos.SKIN_BY_ID["christmaslights"], 2, 9, 1234.0)
+        self.assertTrue(all(0 <= v <= 255 for v in c))
+
+
+class LoginRewardTests(ServerTestCase):
+    async def test_thirty_days_with_big_milestones(self):
+        token = await self.account()
+        db = self.server.db
+        info = (await self.get("/api/login-reward", token))[1]
+        self.assertEqual((info["ready"], info["streak"], len(info["rewards"])), (True, 1, 30))
+        self.assertEqual([m["day"] for m in info["milestones"]], [7, 14, 15, 21, 30])
+        self.assertEqual(info["rewards"][14], "250,000 snake points")
+        self.assertEqual(info["rewards"][29], "2 Royal Crates + 500,000 snake points")
+        from datetime import date, timedelta
+        day = lambda n: (date(2026, 11, 1) + timedelta(days=n)).isoformat()
+        r = db.claim_login_reward(1, random.Random(1), day(0))
+        self.assertEqual((r["kind"], r["points"], r["ready"], r["opened"]), ("points", 5_000, False, []))
+        with self.assertRaisesRegex(ValueError, "tomorrow"):
+            db.claim_login_reward(1, random.Random(1), day(0))
+        for n in range(1, 15):
+            before = db.points(1)
+            r = db.claim_login_reward(1, random.Random(n), day(n))
+        self.assertEqual(r["streak"], 15)
+        self.assertEqual(db.points(1) - before, 250_000)  # day 15
+        for n in range(15, 30):
+            before = db.points(1)
+            r = db.claim_login_reward(1, random.Random(n), day(n))
+        self.assertEqual(r["streak"], 30)
+        self.assertEqual(len(r["opened"]), 2)  # day 30: two Royal Crates, opened...
+        self.assertTrue(all(o["crate"] == "royal" for o in r["opened"]))
+        self.assertEqual(db.points(1) - before, 500_000)  # ...and 500,000 points
+        r = db.claim_login_reward(1, random.Random(1), day(30))  # round again
+        self.assertEqual((r["streak"], r["step"]), (31, 0))
+        r = db.claim_login_reward(1, random.Random(1), day(32))  # skipped a day: back to day 1
+        self.assertEqual((r["streak"], r["step"]), (1, 0))
+
+
+class TradeTests(ServerTestCase):
+    async def test_offer_accept_and_what_moves(self):
+        a, b = await self.account("alice"), await self.account("bobby")
+        db = self.server.db
+        db.grant(1, "skin:galaxy")
+        db.grant(1, "skin:galaxy")
+        db.grant(2, "skin:snowflake")
+        db.add_points(2, 50_000, "test")
+        db.set_profile(2, {"skin": "snowflake"})
+        items = (await self.get("/api/users/bobby/items"))[1]["items"]
+        self.assertEqual(items, {"skin:snowflake": 1})
+        offer = {"to": "bobby", "give": ["skin:galaxy"], "give_points": 0, "want": ["skin:snowflake"], "want_points": 5_000}
+        status, t = await self.post("/api/trades", offer, a)
+        self.assertEqual((status, t["from"], t["to"], t["status"]), (200, "alice", "bobby", "open"))
+        listing = (await self.get("/api/trades", b))[1]
+        self.assertEqual([x["id"] for x in listing["incoming"]], [t["id"]])
+        self.assertIn("wasn't offered to you", (await self.post("/api/trades/answer", {"id": t["id"], "action": "accept"}, a))[1]["error"])
+        status, done = await self.post("/api/trades/answer", {"id": t["id"], "action": "accept"}, b)
+        self.assertEqual((status, done["status"]), (200, "accepted"))
+        self.assertEqual((db.copies(1, "skin:galaxy"), db.copies(1, "skin:snowflake")), (1, 1))
+        self.assertEqual((db.copies(2, "skin:galaxy"), db.copies(2, "skin:snowflake")), (1, 0))
+        self.assertEqual((db.points(1), db.points(2)), (5_000, 45_000))
+        self.assertEqual(db.user_by_id(2)["skin"], "")  # bobby's last snowflake went: it came off
+        self.assertIn("isn't open", (await self.post("/api/trades/answer", {"id": t["id"], "action": "accept"}, b))[1]["error"])
+        self.assertFalse(any(p["name"] == "alice" for p in db.rankings()))  # trades aren't earnings
+
+    async def test_what_cant_be_traded(self):
+        a, b = await self.account("alice"), await self.account("bobby")
+        db = self.server.db
+        db.grant(1, "skin:rk_cobra")
+        db.grant(1, "skin:mint")
+        db.grant(2, "skin:sky")
+        cases = [({"to": "alice"}, "That's you"), ({"to": "nobody"}, "No player"),
+                 ({"give": ["skin:rk_cobra"], "want": ["skin:sky"]}, "Ranked skins"),
+                 ({"give": ["skin:sky"], "want": ["skin:sky"]}, "don't have everything"),
+                 ({"give": ["skin:mint"], "want": ["skin:mint"]}, "doesn't have everything"),
+                 ({"give": ["skin:mint"], "want": []}, "both sides"),
+                 ({"give": ["skin:mint"], "want_points": -5}, "Points")]
+        for extra, error in cases:
+            offer = {"to": "bobby", "give": [], "want": ["skin:sky"], **extra}
+            self.assertIn(error, (await self.post("/api/trades", offer, a))[1]["error"], extra)
+        # an offer that can't happen any more (the item went) is refused when accepted
+        t = (await self.post("/api/trades", {"to": "bobby", "give": ["skin:mint"], "want": ["skin:sky"]}, a))[1]
+        db.take(1, "skin:mint")
+        self.assertIn("any more", (await self.post("/api/trades/answer", {"id": t["id"], "action": "accept"}, b))[1]["error"])
+        self.assertEqual(db.copies(2, "skin:sky"), 1)  # nothing moved
+        t2 = (await self.post("/api/trades", {"to": "bobby", "give_points": 0, "give": [], "want": ["skin:sky"]}, a))[1]
+        self.assertIn("error", t2)
+        db.add_points(1, 100, "test")
+        t3 = (await self.post("/api/trades", {"to": "bobby", "give_points": 100, "want": ["skin:sky"]}, a))[1]
+        self.assertEqual((await self.post("/api/trades/answer", {"id": t3["id"], "action": "cancel"}, a))[1]["status"], "cancelled")
+
+
+class ReplayTests(ServerTestCase):
+    async def test_watching_world_records(self):
+        token = await self.account()
+        cat = CATEGORY_BY_ID["sprint10"]
+        run = bot_run(cat, 4, random.Random(3))
+        await self.post("/api/runs", run.to_json(), token)
+        status, r = await self.get("/api/replay/sprint10")
+        self.assertEqual((status, r["player"], r["time_ms"]), (200, "alice", round(run.elapsed)))
+        self.assertEqual((r["run"]["seed"], r["run"]["inputs"]), (run.seed, run.inputs))
+        self.assertEqual((await self.get("/api/replay/sprint25"))[0], 404)  # no record yet
+        custom = make_custom(10, 9, [], 5, 1, 130)
+        self.assertIn("can't be watched", (await self.get(f"/api/replay/{custom.id}"))[1]["error"])
+        self.assertEqual((await self.get("/api/replay/nonsense"))[0], 404)
+
+
+class JackpotTests(ServerTestCase):
+    async def test_pot_countdown_and_weighted_draw(self):
+        a, b = await self.account("alice"), await self.account("bobby")
+        db = self.server.db
+        db.grant(1, "skin:galaxy")
+        db.grant(2, "skin:snowflake")
+        db.grant(2, "skin:mint")
+        status, pot = await self.post("/api/jackpot/enter", {"items": ["skin:galaxy"]}, a)
+        self.assertEqual((status, len(pot["players"]), pot["seconds_left"]), (200, 1, None))
+        self.assertEqual(db.copies(1, "skin:galaxy"), 0)  # held in the pot
+        self.assertIsNone(db.jackpot_tick())  # nobody else yet: no draw
+        status, pot = await self.post("/api/jackpot/enter", {"items": ["skin:snowflake", "skin:mint"]}, b)
+        self.assertEqual(status, 200)
+        self.assertEqual(pot["seconds_left"], cos.JACKPOT_COUNTDOWN)
+        values = {p["name"]: p["value"] for p in pot["players"]}
+        self.assertEqual(values["alice"], cos.item_value("skin:galaxy"))
+        self.assertEqual(values["bobby"], cos.item_value("skin:snowflake") + cos.item_value("skin:mint"))
+        self.assertEqual(pot["total"], sum(values.values()))
+        self.assertAlmostEqual(sum(p["chance"] for p in pot["players"]), 100, delta=0.2)
+        self.assertIsNone(db.jackpot_tick())  # still counting down
+
+        class Rigged:  # the ticket lands in bobby's slice (after alice's)
+            def random(self):
+                return 0.999
+        later = datetime.now(timezone.utc) + timedelta(seconds=cos.JACKPOT_COUNTDOWN + 1)
+        result = db.jackpot_tick(later, Rigged())
+        self.assertEqual((result["winner_name"], result["total"]), ("bobby", pot["total"]))
+        for it in ("skin:galaxy", "skin:snowflake", "skin:mint"):
+            self.assertEqual(db.copies(2, it), 1)
+        self.assertEqual(db.copies(1, "skin:galaxy"), 0)
+        state = (await self.get("/api/jackpot", a))[1]
+        self.assertEqual((state["last"]["winner"], state["players"], state["history"][0]["players"]), ("bobby", [], 2))
+
+    async def test_what_cant_go_in(self):
+        a = await self.account("alice")
+        db = self.server.db
+        db.grant(1, "skin:rk_cobra")
+        for items, msg in ((["skin:galaxy"], "don't have"), (["skin:rk_cobra"], "Ranked"), ([], "1 to"),
+                           (["skin:nope"], "Unknown")):
+            status, r = await self.post("/api/jackpot/enter", {"items": items}, a)
+            self.assertEqual(status, 400)
+            self.assertIn(msg, r["error"])
+        self.assertEqual((await self.post("/api/jackpot/enter", {"items": ["skin:galaxy"]}))[0], 401)
+
+    async def test_a_lone_player_gets_their_items_back(self):
+        await self.account("alice")
+        db = self.server.db
+        db.grant(1, "skin:galaxy")
+        db.jackpot_enter(1, ["skin:galaxy"])
+        self.assertIsNone(db.jackpot_tick())
+        result = db.jackpot_tick(datetime.now(timezone.utc) + timedelta(hours=cos.JACKPOT_LONE_HOURS, minutes=1))
+        self.assertEqual(result["refunded"], 1)
+        self.assertEqual(db.copies(1, "skin:galaxy"), 1)
+        self.assertEqual(db.jackpot_state()["players"], [])
+
+    def test_values(self):
+        self.assertEqual(cos.item_value("skin:galaxy"), cos.shop_price("skin:galaxy") or cos.RARITY_VALUE[cos.item_rarity("skin:galaxy")])
+        self.assertEqual(cos.item_value("skin:snowflake"), cos.RARITY_VALUE[cos.item_rarity("skin:snowflake")])

@@ -153,10 +153,19 @@ def weekly_category(category_id: str) -> Category:
 # settings shares the same id: that is what lets personal and world records
 # work for custom setups. The name is just a label and isn't part of the id.
 
-def _rules(w, h, modes, goal, fruit_count, tick_ms, fruit) -> dict:
-    return {"w": int(w), "h": int(h), "modes": sorted(str(m) for m in modes),
-            "goal": None if not goal else int(goal), "fruit_count": int(fruit_count),
-            "tick_ms": round(float(tick_ms), 1), "fruit": str(fruit)}
+ACCEL_MS = 4.0      # Accelerate in custom categories: this many ms faster per fruit eaten...
+MIN_TICK_MS = 45.0  # ...down to this
+
+
+def _rules(w, h, modes, goal, fruit_count, tick_ms, fruit, accel=0) -> dict:
+    rules = {"w": int(w), "h": int(h), "modes": sorted(str(m) for m in modes),
+             "goal": None if not goal else int(goal), "fruit_count": int(fruit_count),
+             "tick_ms": round(float(tick_ms), 1), "fruit": str(fruit)}
+    # (only there when it's on, so categories without it keep the ids they always had)
+    accel = round(min(50.0, max(0.0, float(accel or 0))), 1)
+    if accel:
+        rules["accel"] = accel
+    return rules
 
 
 def custom_id(rules: dict) -> str:
@@ -171,27 +180,30 @@ def describe(rules: dict) -> str:
              f"{1000 / rules['tick_ms']:.1f} cells/s"]
     if rules["fruit_count"] != 1:
         parts.append(f"{rules['fruit_count']} fruit at once")
+    if rules.get("accel"):
+        parts.append("speeding up with every fruit")
     return ", ".join(parts).capitalize() + "."
 
 
-def make_custom(w, h, modes, goal, fruit_count, tick_ms, fruit="apple", name: str = "") -> Category:
-    """Build a custom category from settings (goal 0 or None = fill the board)."""
-    rules = _rules(w, h, modes, goal, fruit_count, tick_ms, fruit)
+def make_custom(w, h, modes, goal, fruit_count, tick_ms, fruit="apple", name: str = "", accel=0) -> Category:
+    """Build a custom category from settings (goal 0 or None = fill the board; accel: ms faster
+    per fruit, for Accelerate)."""
+    rules = _rules(w, h, modes, goal, fruit_count, tick_ms, fruit, accel)
     return Category(custom_id(rules), name or "Custom", describe(rules), rules["w"], rules["h"],
                     tuple(rules["modes"]), rules["goal"], rules["fruit_count"], rules["tick_ms"],
-                    fruit=rules["fruit"], custom=True)
+                    accel=rules.get("accel", 0), min_tick_ms=MIN_TICK_MS, fruit=rules["fruit"], custom=True)
 
 
 def category_def(c: Category) -> dict:
     """The rules of a custom category, as saved in run files and the categories file."""
     return {"id": c.id, "name": c.name,
-            **_rules(c.w, c.h, c.modes, c.goal, c.fruit_count, c.tick_ms, c.fruit)}
+            **_rules(c.w, c.h, c.modes, c.goal, c.fruit_count, c.tick_ms, c.fruit, c.accel)}
 
 
 def category_from_def(d: dict) -> Category:
     """Rebuild a custom category; raises ValueError if its id doesn't match its rules."""
     c = make_custom(d["w"], d["h"], d.get("modes", ()), d.get("goal"), d.get("fruit_count", 1),
-                    d["tick_ms"], d.get("fruit", "apple"), str(d.get("name", ""))[:40])
+                    d["tick_ms"], d.get("fruit", "apple"), str(d.get("name", ""))[:40], d.get("accel", 0))
     if "id" in d and d["id"] != c.id:
         raise ValueError("category id doesn't match its rules")
     if not (5 <= c.w <= 1000 and 5 <= c.h <= 1000 and c.tick_ms > 0 and c.fruit_count >= 1):

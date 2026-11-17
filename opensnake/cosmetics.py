@@ -410,6 +410,31 @@ SKINS = [
           glow=True, series="Ranked"),
     _skin("rk_basilisk", "Basilisk Gaze", "mythic", "chevron", ["#1a1400", "#ffcc00"], "#fff3b0", glow=True,
           series="Ranked"),
+
+    # Holiday: Thanksgiving and Christmas, only from the Holiday Crate
+    _skin("cranberry", "Cranberry Sauce", "uncommon", "grad", ["#9b1b30", "#e0435c"], "#5e0f1d", series="Holiday"),
+    _skin("pumpkinpie", "Pumpkin Pie", "rare", "stripes", ["#d9772b", "#d9772b", "#f6e3c2"], "#8a4a1c",
+          series="Holiday"),
+    _skin("roastturkey", "Roast Turkey", "rare", "grad", ["#7a3f14", "#d98b3a"], "#4a250b", series="Holiday"),
+    _skin("cornbread", "Cornbread", "uncommon", "grad", ["#e8b83a", "#fbe7a1"], "#9c7414", series="Holiday"),
+    _skin("autumnleaves", "Autumn Leaves", "epic", "flow", ["#b5371a", "#e8771f", "#f2b632", "#7a4a1c"],
+          series="Holiday"),
+    _skin("harvestmoon", "Harvest Moon", "epic", "pulse", ["#2a1606", "#ff9a2e"], "#ffcf7a", glow=True,
+          series="Holiday"),
+    _skin("cornucopia", "Cornucopia", "legendary", "shimmer", ["#a8601c", "#ffd36b"], "#ffe9b0", glow=True,
+          series="Holiday"),
+    _skin("peppermint", "Peppermint", "uncommon", "stripes", ["#e3222f", "#fafafa"], "#a3101a", series="Holiday"),
+    _skin("gingerbread", "Gingerbread", "rare", "stripes", ["#9a5b2a", "#9a5b2a", "#fff6ea"], "#5c3415",
+          series="Holiday"),
+    _skin("mistletoe", "Mistletoe", "rare", "grad", ["#1f7a3a", "#4fbf6a"], "#d0263a", series="Holiday"),
+    _skin("snowflake", "Snowflake", "epic", "shimmer", ["#9fd4ff", "#ffffff"], "#e8f6ff", glow=True,
+          series="Holiday"),
+    _skin("christmaslights", "Christmas Lights", "legendary", "lights", ["#e8202a", "#2fbf4a", "#ffc62a", "#2a7bf2"],
+          "#1d3b1f", glow=True, series="Holiday"),
+    _skin("northpole", "North Pole", "legendary", "stripes", ["#e3222f", "#fafafa"], "#ffd54f", glow=True,
+          series="Holiday"),
+    _skin("santassleigh", "Santa's Sleigh", "mythic", "lights", ["#d81b2a", "#ffffff", "#ffd54f", "#1f8a3a"],
+          "#ffd54f", glow=True, series="Holiday"),
 ]
 SKIN_BY_ID = {s.id: s for s in SKINS}
 
@@ -484,6 +509,10 @@ def skin_color(skin: Skin, i: int, n: int, now: float) -> tuple:
     if skin.pattern == "spark":  # crackling sparks over a dark body
         base = _lerp(c[0], c[1], 0.3 + 0.3 * math.sin(i * 0.8 + now / 300))
         return _lerp(base, c[2], 1.0 if _hash01(i, int(now // 90)) > 0.88 else 0.0)
+    if skin.pattern == "lights":  # a string of coloured bulbs, twinkling on and off
+        bulb = c[i % len(c)]
+        on = _hash01(i, int(now // 450)) > 0.25
+        return bulb if on else _lerp(bulb, (24, 24, 30), 0.65)
     return c[0]
 
 
@@ -588,6 +617,7 @@ class Crate:
     price: int
     color: tuple
     odds: dict  # rarity -> percent
+    series: str = ""  # only this series' skins (a themed crate), not the usual pool
 
 
 CRATES = [
@@ -600,18 +630,25 @@ CRATES = [
     Crate("diamond", "Diamond Crate", 100_000, (80, 210, 240),
           {"uncommon": 10, "rare": 35, "epic": 35, "legendary": 16, "mythic": 4}),
     Crate("royal", "Royal Crate", 500_000, (150, 60, 220), {"legendary": 85, "mythic": 15}),
+    Crate("holiday", "Holiday Crate", 40_000, (200, 34, 44),
+          {"uncommon": 26, "rare": 36, "epic": 24, "legendary": 11, "mythic": 3}, series="Holiday"),
 ]
 CRATE_BY_ID = {c.id: c for c in CRATES}
 
 
 PASS_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Pass"}
 RANKED_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Ranked"}
-UNTRADEABLE = RANKED_ONLY  # earned by climbing the ranks, so they can't be sold
+UNTRADEABLE = RANKED_ONLY  # earned by climbing the ranks, so they can't be sold or traded
+# skins only a themed crate gives (the Holiday Crate's)
+THEMED_ONLY = {f"skin:{s.id}" for s in SKINS if s.series in {c.series for c in CRATES if c.series}}
 
 
-def items_of(rarity: str) -> list[str]:
-    """Everything of a rarity that loot boxes can give (not the battle pass or ranked skins)."""
-    return [it for it in ALL_ITEMS if item_rarity(it) == rarity and it not in PASS_ONLY | RANKED_ONLY]
+def items_of(rarity: str, series: str = "") -> list[str]:
+    """Everything of a rarity that loot boxes can give: a themed crate's series, or else the usual
+    pool (not the battle pass, ranked or themed crates' skins)."""
+    if series:
+        return [f"skin:{s.id}" for s in SKINS if s.series == series and s.rarity == rarity]
+    return [it for it in ALL_ITEMS if item_rarity(it) == rarity and it not in PASS_ONLY | RANKED_ONLY | THEMED_ONLY]
 
 
 # ---- the player market ----------------------------------------------------------------
@@ -620,6 +657,69 @@ MARKET_FEE = 0.05            # taken from the price when something sells (those 
 MARKET_MIN_PRICE = 100
 MARKET_MAX_PRICE = 10_000_000
 MARKET_MAX_LISTINGS = 20     # per player at once
+
+
+# What an item is worth, in snake points (the jackpot's values): its shop price, or else by rarity.
+RARITY_VALUE = {"common": 500, "uncommon": 2_000, "rare": 8_000, "epic": 30_000, "legendary": 120_000,
+                "mythic": 400_000}
+
+
+def item_value(item: str) -> int:
+    price = shop_price(item)
+    return price if price else RARITY_VALUE.get(item_rarity(item) or "common", 500)
+
+
+# The jackpot: everyone puts items into one pot, and one of them (picked at random, a bigger
+# share of the pot's value being a bigger chance) wins all of it.
+JACKPOT_COUNTDOWN = 45       # seconds from the second player joining to the draw
+JACKPOT_MAX_ITEMS = 20       # one player's items in one pot
+JACKPOT_MAX_PLAYERS = 20
+JACKPOT_LONE_HOURS = 24      # nobody else joins in this long: the items go back
+
+# trading items between players
+TRADE_MAX_ITEMS = 12   # on each side of a trade
+TRADE_MAX_OPEN = 10    # trade offers one player can have out at once
+
+# Daily login rewards: one a day (UTC), better each day in a row, then round again.
+# Daily login rewards: one a day (UTC), for 30 days in a row and then round again. Missing a
+# day starts again at day 1. Each day gives everything in its list; the big days are milestones.
+def _p(n):
+    return ("points", n)
+
+
+def _c(crate):
+    return ("crate", crate)
+
+
+LOGIN_REWARDS = [
+    [_p(5_000)], [_p(7_500)], [_p(10_000)], [_c("silver")], [_p(15_000)], [_p(20_000)],
+    [_c("gold"), _p(25_000)],                       # day 7
+    [_p(25_000)], [_p(30_000)], [_c("diamond")], [_p(35_000)], [_p(40_000)], [_p(50_000)],
+    [_c("diamond"), _p(50_000)],                    # day 14
+    [_p(250_000)],                                  # day 15
+    [_p(50_000)], [_p(60_000)], [_c("gold"), _c("diamond")], [_p(75_000)], [_c("holiday")],
+    [_c("royal")],                                  # day 21
+    [_p(75_000)], [_p(80_000)], [_c("diamond"), _c("diamond")], [_p(90_000)], [_p(100_000)],
+    [_c("holiday"), _c("holiday")], [_p(125_000)], [_p(150_000)],
+    [_c("royal"), _c("royal"), _p(500_000)],        # day 30
+]
+LOGIN_MILESTONES = [7, 14, 15, 21, 30]  # the days shown as the big ones
+
+
+def login_reward_name(rewards) -> str:
+    """ "Gold Crate + 25,000 snake points", "2 Royal Crates + 500,000 snake points" """
+    if isinstance(rewards, tuple):
+        rewards = [rewards]
+    points = sum(v for k, v in rewards if k == "points")
+    crates: dict[str, int] = {}
+    for k, v in rewards:
+        if k == "crate":
+            crates[v] = crates.get(v, 0) + 1
+    parts = [CRATE_BY_ID[c].name if n == 1 else f"{n} {CRATE_BY_ID[c].name.replace('Crate', 'Crates')}"
+             for c, n in crates.items()]
+    if points:
+        parts.append(f"{points:,} snake points")
+    return " + ".join(parts)
 
 
 def market_fee(price: int) -> int:
@@ -668,9 +768,9 @@ def daily_challenges(day: str) -> list[dict]:
 
 def roll(crate: Crate, rng=random) -> str:
     """One item from a loot box: pick a rarity by the odds, then an item of it."""
-    rarities = [r for r in RARITIES if crate.odds.get(r)]
+    rarities = [r for r in RARITIES if crate.odds.get(r) and items_of(r, crate.series)]
     rarity = rng.choices(rarities, weights=[crate.odds[r] for r in rarities])[0]
-    return rng.choice(items_of(rarity))
+    return rng.choice(items_of(rarity, crate.series))
 
 
 # ---- profile pictures ---------------------------------------------------------------

@@ -44,7 +44,8 @@ def catalog() -> dict:
                    "price": s.price, "series": s.series} for s in cos.SKINS],
         "packs": [{"id": p.id, "name": p.name, "rarity": p.rarity, "swatch": [hexcol(c) for c in p.swatch],
                    "price": p.price} for p in cos.PACKS],
-        "crates": [{"id": c.id, "name": c.name, "price": c.price, "color": hexcol(c.color), "odds": c.odds}
+        "crates": [{"id": c.id, "name": c.name, "price": c.price, "color": hexcol(c.color), "odds": c.odds,
+                    "series": c.series}
                    for c in cos.CRATES],
         "rarities": [{"id": r, "name": cos.RARITY_NAMES[r], "color": hexcol(cos.RARITY_COLORS[r])}
                      for r in cos.RARITIES],
@@ -67,7 +68,9 @@ def catalog() -> dict:
                     "wr_hold_reward": cos.WR_HOLD_REWARD, "pass_price": cos.PASS_PRICE,
                     "level_xp": cos.LEVEL_XP, "pass_levels": cos.PASS_LEVELS,
                     "market_fee": cos.MARKET_FEE, "market_min": cos.MARKET_MIN_PRICE,
-                    "market_max": cos.MARKET_MAX_PRICE, "daily_bonus": cos.DAILY_BONUS},
+                    "market_max": cos.MARKET_MAX_PRICE, "daily_bonus": cos.DAILY_BONUS,
+                    "rarity_value": cos.RARITY_VALUE, "jackpot_countdown": cos.JACKPOT_COUNTDOWN,
+                    "jackpot_max_items": cos.JACKPOT_MAX_ITEMS},
     }
 
 
@@ -90,6 +93,7 @@ def golden() -> dict:
         make_custom(12, 11, ["wall", "gate", "dimension", "minesweeper", "magnet"], 10, 2, 110),
         make_custom(10, 9, ["poison", "borderless", "twin", "statue"], 8, 2, 130),
         make_custom(9, 8, ["cheese", "arrow", "shield", "light"], 10, 1, 130),
+        make_custom(12, 11, ["wall"], 12, 1, 160, accel=5),
     ]
     runs = []
     for c in cats:

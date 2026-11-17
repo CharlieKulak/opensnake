@@ -173,3 +173,29 @@ class UnknownModeTests(unittest.TestCase):
             loaded = load_custom_categories(path)  # used to crash once the mod was turned off
         self.assertEqual(loaded[0].name, "Old mod run")
         self.assertIn("somemod", loaded[0].desc)
+
+
+class AccelerateCustomTests(unittest.TestCase):
+    def test_accelerate_in_custom_categories(self):
+        import hashlib
+        from opensnake.speedrun import category_def, category_from_def, make_custom
+        plain = make_custom(10, 9, [], 8, 1, 150)
+        # categories without Accelerate keep the ids they always had
+        old_rules = '{"fruit":"apple","fruit_count":1,"goal":8,"h":9,"modes":[],"tick_ms":150.0,"w":10}'
+        self.assertEqual(plain.id, "custom-" + hashlib.sha1(old_rules.encode()).hexdigest()[:10])
+        fast = make_custom(10, 9, [], 8, 1, 150, accel=4)
+        self.assertNotEqual(fast.id, plain.id)
+        self.assertEqual((fast.ms_for(0), fast.ms_for(10), fast.ms_for(100)), (150, 110, 45))
+        self.assertEqual(category_from_def(category_def(fast)).id, fast.id)
+        self.assertNotIn("accel", category_def(plain))
+        # a run in it replays and verifies, timed with the speed-up
+        from test_speedrun import bot_run as play
+        for seed in range(1, 40):
+            run = play(fast, seed, random.Random(seed))
+            if run.finished:
+                break
+        self.assertTrue(run.finished)
+        data = run.to_json()
+        self.assertEqual(data["category_def"]["accel"], 4.0)
+        self.assertTrue(verify(data)[0])
+        self.assertLess(run.elapsed, 150 * run.game.tick)

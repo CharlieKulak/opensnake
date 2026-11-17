@@ -30,11 +30,20 @@ HTTP API (JSON):
     POST /api/market/cancel   {id}               -> take your listing down (you get the item back)
     POST /api/market/buy      {id}               -> buy a listing
     GET  /api/daily                              -> today's three challenges and your progress
+    GET  /api/login-reward                       -> {ready, streak, step, rewards}: today's login reward
+    POST /api/login-reward/claim                 -> claim it (points, or a loot box: {item, new, ...})
+    GET  /api/trades                             -> {incoming, outgoing, history}
+    POST /api/trades  {to, give, give_points, want, want_points} -> offer a trade (items: "skin:id"...)
+    POST /api/trades/answer  {id, action}        -> accept, decline (offered to you) or cancel (yours)
+    GET  /api/users/{name}/items                 -> {name, items: {item: copies}}: what they could trade
+    GET  /api/replay/{category}                  -> {player, time_ms, date, run}: the WR run, to watch
+    GET  /api/jackpot                            -> the pot: players (items, value, chance), total, seconds_left, last draw
+    POST /api/jackpot/enter   {items}            -> put items in the pot (drawn 45 s after a second player joins)
     POST /api/daily/claim     {id} (0-2 or "bonus") -> claim a finished challenge's snake points
     POST /api/rounds          {fruit}            -> snake points for a finished round
     GET  /api/categories?q=&sort=top|popular|new -> community custom speedrun categories (search, sort)
     POST /api/categories/vote    {id, up}        -> upvote a community category (up: false takes it back)
-    POST /api/categories      {def}              -> share a custom category
+    POST /api/categories      {def}              -> share a custom category: {id, new, name, creator}
     POST /api/categories/rename  {id, name}      -> rename a category you made
     GET  /api/rankings                           -> the community leaderboard: scores out of 100
     GET  /api/weekly                             -> this week's 10 speedrun categories, with their WRs
@@ -97,6 +106,7 @@ MAX_MATCH_NAME = 32
 MAX_LISTED = 50  # public matches returned per search
 MAX_BIO = 160
 MAX_CATEGORY_NAME = 40
+MAX_CATEGORIES_EACH = 50  # community categories one player can make
 MAX_MESSAGE = 500
 MESSAGE_GAP = 0.3   # seconds between messages from one account (no flooding)
 MAX_ROUND_FRUIT = 300  # most fruit one round counts towards daily challenges
@@ -114,6 +124,10 @@ def clean_text(value, limit: int, single_spaced: bool = True) -> str:
     if single_spaced:
         text = " ".join(text.split())
     return text.strip()[:limit].strip()
+
+
+def _parse_iso(text: str) -> datetime:
+    return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
 def now_iso() -> str:
@@ -171,6 +185,19 @@ class Database:
                 id INTEGER PRIMARY KEY, seller INTEGER NOT NULL, item TEXT NOT NULL, price INTEGER NOT NULL,
                 created TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS listings_item ON listings(item, price);
+            CREATE TABLE IF NOT EXISTS jackpot_rounds (
+                id INTEGER PRIMARY KEY, status TEXT NOT NULL DEFAULT 'open', created TEXT NOT NULL,
+                ends TEXT NOT NULL DEFAULT '', winner INTEGER, total INTEGER NOT NULL DEFAULT 0,
+                done TEXT NOT NULL DEFAULT '');
+            CREATE TABLE IF NOT EXISTS jackpot_entries (
+                id INTEGER PRIMARY KEY, round INTEGER NOT NULL, user_id INTEGER NOT NULL, item TEXT NOT NULL,
+                value INTEGER NOT NULL, created TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS jackpot_entries_round ON jackpot_entries(round);
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY, sender INTEGER NOT NULL, recipient INTEGER NOT NULL,
+                give TEXT NOT NULL, give_points INTEGER NOT NULL, want TEXT NOT NULL, want_points INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open', created TEXT NOT NULL, done TEXT NOT NULL DEFAULT '');
+            CREATE INDEX IF NOT EXISTS trades_open ON trades(status, recipient, sender);
             CREATE TABLE IF NOT EXISTS daily (
                 user_id INTEGER NOT NULL, day TEXT NOT NULL, progress TEXT NOT NULL DEFAULT '{}',
                 claimed TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (user_id, day));
@@ -180,7 +207,9 @@ class Database:
         for column, decl in (("points", "INTEGER NOT NULL DEFAULT 0"), ("bio", "TEXT NOT NULL DEFAULT ''"),
                              ("avatar", "TEXT NOT NULL DEFAULT ''"), ("skin", "TEXT NOT NULL DEFAULT ''"),
                              ("rp", "INTEGER NOT NULL DEFAULT 0"), ("wins", "INTEGER NOT NULL DEFAULT 0"),
-                             ("losses", "INTEGER NOT NULL DEFAULT 0"), ("draws", "INTEGER NOT NULL DEFAULT 0")):
+                             ("losses", "INTEGER NOT NULL DEFAULT 0"), ("draws", "INTEGER NOT NULL DEFAULT 0"),
+                             # daily login rewards (3.2): the last day claimed and the streak of days in a row
+                             ("login_day", "TEXT NOT NULL DEFAULT ''"), ("login_streak", "INTEGER NOT NULL DEFAULT 0")):
             if column not in have:
                 self.db.execute(f"ALTER TABLE users ADD COLUMN {column} {decl}")
         # The highest rank each player has reached, so rank-up rewards pay once (added in 2.6).
@@ -730,6 +759,285 @@ class Database:
             out.append({"rank": name, "rewards": got})
         return out
 
+    # -- daily login rewards
+
+    def login_reward_info(self, user_id: int, day: str | None = None) -> dict:
+        """Today's login reward: the day of the streak it would be, what each day gives, and
+        whether it's been claimed. Missing a day starts the streak again."""
+        day = day or self.today()
+        row = self.user_by_id(user_id)
+        yesterday = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        claimed = row["login_day"] == day
+        if claimed:
+            streak = row["login_streak"]
+        else:
+            streak = row["login_streak"] + 1 if row["login_day"] == yesterday else 1
+        step = (streak - 1) % len(cos.LOGIN_REWARDS)
+        return {"ready": not claimed, "streak": streak, "step": step,
+                "rewards": [cos.login_reward_name(r) for r in cos.LOGIN_REWARDS],
+                "milestones": [{"day": d, "reward": cos.login_reward_name(cos.LOGIN_REWARDS[d - 1])}
+                               for d in cos.LOGIN_MILESTONES]}
+
+    def claim_login_reward(self, user_id: int, rng=random, day: str | None = None) -> dict:
+        day = day or self.today()
+        info = self.login_reward_info(user_id, day)
+        if not info["ready"]:
+            raise ValueError("You've had today's reward: come back tomorrow.")
+        self.db.execute("UPDATE users SET login_day = ?, login_streak = ? WHERE id = ?", (day, info["streak"], user_id))
+        self.db.commit()
+        rewards = cos.LOGIN_REWARDS[info["step"]]
+        opened = []
+        for kind, value in rewards:
+            if kind == "points":
+                self.add_points(user_id, value, f"login reward, day {info['streak']}")
+            else:
+                opened.append({**self.open_crate(user_id, value, rng, free=True), "crate": value})
+        out = {"reward": cos.login_reward_name(rewards), "kind": "crate" if opened else "points",
+               "opened": opened, **self.login_reward_info(user_id, day), "points": self.points(user_id)}
+        if opened:  # (the first loot box's item at the top level too, as before)
+            out.update({k: opened[0][k] for k in ("item", "new", "copies", "crate")})
+        return out
+
+    # -- the jackpot
+
+    def jackpot_round(self, now: datetime | None = None) -> sqlite3.Row:
+        """The pot taking entries now (a new one once the last is drawn)."""
+        row = self.db.execute("SELECT * FROM jackpot_rounds WHERE status = 'open' ORDER BY id LIMIT 1").fetchone()
+        if row:
+            return row
+        now = now or datetime.now(timezone.utc)
+        self.db.execute("INSERT INTO jackpot_rounds (created) VALUES (?)", (now.strftime("%Y-%m-%dT%H:%M:%SZ"),))
+        self.db.commit()
+        return self.jackpot_round()
+
+    def _jackpot_players(self, round_id: int) -> list[dict]:
+        """Who's in a pot, in the order they joined: name, avatar, items, value."""
+        players: dict[int, dict] = {}
+        for e in self.db.execute("SELECT jackpot_entries.*, users.name, users.avatar FROM jackpot_entries JOIN users "
+                                 "ON users.id = jackpot_entries.user_id WHERE round = ? ORDER BY jackpot_entries.id",
+                                 (round_id,)).fetchall():
+            p = players.setdefault(e["user_id"], {"user_id": e["user_id"], "name": e["name"],
+                                                  "avatar": e["avatar"] or cos.DEFAULT_AVATAR, "items": [], "value": 0})
+            p["items"].append(e["item"])
+            p["value"] += e["value"]
+        return list(players.values())
+
+    def jackpot_enter(self, user_id: int, items, now: datetime | None = None) -> None:
+        """Put items into the pot (they're held until the draw)."""
+        now = now or datetime.now(timezone.utc)
+        if not isinstance(items, list) or not 1 <= len(items) <= cos.JACKPOT_MAX_ITEMS:
+            raise ValueError(f"Put in 1 to {cos.JACKPOT_MAX_ITEMS} skins or packs.")
+        items = [str(i) for i in items]
+        for it in items:
+            if cos.item_rarity(it) is None:
+                raise ValueError("Unknown item.")
+            if it in cos.UNTRADEABLE:
+                raise ValueError("Ranked skins can't go in the jackpot.")
+        rnd = self.jackpot_round(now)
+        if rnd["ends"] and _parse_iso(rnd["ends"]) <= now:
+            raise ValueError("The draw's happening: get in the next one.")
+        players = self._jackpot_players(rnd["id"])
+        mine = next((p for p in players if p["user_id"] == user_id), None)
+        if not mine and len(players) >= cos.JACKPOT_MAX_PLAYERS:
+            raise ValueError(f"This pot is full ({cos.JACKPOT_MAX_PLAYERS} players): get in the next one.")
+        if mine and len(mine["items"]) + len(items) > cos.JACKPOT_MAX_ITEMS:
+            raise ValueError(f"You can put {cos.JACKPOT_MAX_ITEMS} items in one pot.")
+        if not self._has(user_id, items, 0):
+            raise ValueError("You don't have everything you picked.")
+        stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self.db:
+            for it in items:
+                self.take(user_id, it)
+                self.db.execute("INSERT INTO jackpot_entries (round, user_id, item, value, created) VALUES (?, ?, ?, ?, ?)",
+                                (rnd["id"], user_id, it, cos.item_value(it), stamp))
+            joined = len({p["user_id"] for p in players} | {user_id})
+            if joined >= 2 and not rnd["ends"]:  # a second player: the countdown starts
+                ends = (now + timedelta(seconds=cos.JACKPOT_COUNTDOWN)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                self.db.execute("UPDATE jackpot_rounds SET ends = ? WHERE id = ?", (ends, rnd["id"]))
+
+    def jackpot_tick(self, now: datetime | None = None, rng=None) -> dict | None:
+        """Draw the pot once its countdown is over (or give a lone player's items back after a day).
+        Returns what happened, or None."""
+        now = now or datetime.now(timezone.utc)
+        rnd = self.db.execute("SELECT * FROM jackpot_rounds WHERE status = 'open' ORDER BY id LIMIT 1").fetchone()
+        if not rnd:
+            return None
+        players = self._jackpot_players(rnd["id"])
+        stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if not rnd["ends"]:
+            if len(players) == 1 and now - _parse_iso(rnd["created"]) > timedelta(hours=cos.JACKPOT_LONE_HOURS):
+                with self.db:
+                    for it in players[0]["items"]:
+                        self.grant(players[0]["user_id"], it, commit=False)
+                    self.db.execute("UPDATE jackpot_rounds SET status = 'refunded', done = ? WHERE id = ?", (stamp, rnd["id"]))
+                return {"round": rnd["id"], "refunded": players[0]["user_id"]}
+            return None
+        if _parse_iso(rnd["ends"]) > now:
+            return None
+        total = sum(p["value"] for p in players)
+        rng = rng or secrets.SystemRandom()
+        ticket = rng.random() * total  # (a bigger share of the pot, a bigger slice of the tickets)
+        winner, upto = players[-1], 0
+        for p in players:
+            upto += p["value"]
+            if ticket < upto:
+                winner = p
+                break
+        with self.db:
+            for p in players:
+                for it in p["items"]:
+                    self.grant(winner["user_id"], it, commit=False)
+            self.db.execute("UPDATE jackpot_rounds SET status = 'done', winner = ?, total = ?, done = ? WHERE id = ?",
+                            (winner["user_id"], total, stamp, rnd["id"]))
+        return {"round": rnd["id"], "winner": winner["user_id"], "winner_name": winner["name"], "total": total,
+                "players": [p["user_id"] for p in players]}
+
+    def _jackpot_view(self, round_id: int) -> dict:
+        players = self._jackpot_players(round_id)
+        total = sum(p["value"] for p in players)
+        return {"total": total, "players": [
+            {"name": p["name"], "avatar": p["avatar"], "items": p["items"], "value": p["value"],
+             "chance": round(100 * p["value"] / total, 1) if total else 0} for p in players]}
+
+    def jackpot_state(self, now: datetime | None = None) -> dict:
+        """The pot now (who's in, with what, their chances and the countdown), the last draw and
+        recent winners."""
+        now = now or datetime.now(timezone.utc)
+        rnd = self.jackpot_round(now)
+        left = max(0, int((_parse_iso(rnd["ends"]) - now).total_seconds() + 0.999)) if rnd["ends"] else None
+        out = {"round": rnd["id"], "seconds_left": left, "countdown": cos.JACKPOT_COUNTDOWN,
+               **self._jackpot_view(rnd["id"]), "last": None, "history": []}
+        done = self.db.execute("SELECT jackpot_rounds.*, users.name AS winner_name FROM jackpot_rounds JOIN users "
+                               "ON users.id = jackpot_rounds.winner WHERE status = 'done' ORDER BY id DESC LIMIT 6").fetchall()
+        if done:
+            out["last"] = {"round": done[0]["id"], "winner": done[0]["winner_name"], **self._jackpot_view(done[0]["id"])}
+            out["history"] = [{"round": d["id"], "winner": d["winner_name"], "total": d["total"],
+                               "players": len(self._jackpot_players(d["id"]))} for d in done]
+        return out
+
+    # -- trading items with other players
+
+    def tradeable_counts(self, user_id: int) -> dict[str, int]:
+        """What a player has that they could trade: copies not on the market, ranked skins aside."""
+        return {it: n for it, n in self.counts(user_id).items() if n > 0 and it not in cos.UNTRADEABLE}
+
+    @staticmethod
+    def _item_list(items) -> list[str]:
+        if not isinstance(items, list) or len(items) > cos.TRADE_MAX_ITEMS:
+            raise ValueError(f"A trade can have up to {cos.TRADE_MAX_ITEMS} items on each side.")
+        items = [str(i) for i in items]
+        for it in items:
+            if cos.item_rarity(it) is None:
+                raise ValueError("Unknown item.")
+            if it in cos.UNTRADEABLE:
+                raise ValueError("Ranked skins can't be traded.")
+        return items
+
+    @staticmethod
+    def _points(n) -> int:
+        try:
+            n = int(n or 0)
+        except (TypeError, ValueError):
+            raise ValueError("Points must be a number.") from None
+        if not 0 <= n <= cos.MARKET_MAX_PRICE:
+            raise ValueError(f"Points in a trade go from 0 to {cos.MARKET_MAX_PRICE:,}.")
+        return n
+
+    def _has(self, user_id: int, items: list[str], points: int) -> bool:
+        have = self.counts(user_id)
+        need: dict[str, int] = {}
+        for it in items:
+            need[it] = need.get(it, 0) + 1
+        return all(have.get(it, 0) >= n for it, n in need.items()) and self.points(user_id) >= points
+
+    def offer_trade(self, sender: int, recipient_name: str, give, give_points, want, want_points) -> int:
+        """Offer a trade: these of mine (and points) for those of theirs (and points)."""
+        other = self.user_row(recipient_name)
+        if not other:
+            raise LookupError("No player with that name.")
+        if other["id"] == sender:
+            raise ValueError("That's you!")
+        give, want = self._item_list(give), self._item_list(want)
+        give_points, want_points = self._points(give_points), self._points(want_points)
+        if not (give or give_points) or not (want or want_points):
+            raise ValueError("Put something on both sides of the trade.")
+        if not self._has(sender, give, give_points):
+            raise ValueError("You don't have everything you're offering.")
+        if not self._has(other["id"], want, want_points):
+            raise ValueError(f"{other['name']} doesn't have everything you're asking for.")
+        if self.db.execute("SELECT COUNT(*) FROM trades WHERE sender = ? AND status = 'open'",
+                           (sender,)).fetchone()[0] >= cos.TRADE_MAX_OPEN:
+            raise ValueError(f"You can have {cos.TRADE_MAX_OPEN} trade offers out at once.")
+        cur = self.db.execute("INSERT INTO trades (sender, recipient, give, give_points, want, want_points, created) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?)", (sender, other["id"], json.dumps(give), give_points,
+                                                               json.dumps(want), want_points, now_iso()))
+        self.db.commit()
+        return cur.lastrowid
+
+    def trade(self, trade_id) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+
+    def answer_trade(self, user_id: int, trade_id, action: str) -> sqlite3.Row:
+        """Accept or decline a trade offered to you, or cancel one you offered."""
+        t = self.trade(trade_id)
+        if not t or t["status"] != "open":
+            raise LookupError("That trade isn't open any more.")
+        if action == "cancel":
+            if t["sender"] != user_id:
+                raise PermissionError("Only the player who offered it can cancel it.")
+        elif t["recipient"] != user_id:
+            raise PermissionError("That trade wasn't offered to you.")
+        if action == "accept":
+            give, want = json.loads(t["give"]), json.loads(t["want"])
+            if not self._has(t["sender"], give, t["give_points"]):
+                raise ValueError("They don't have everything they offered any more.")
+            if not self._has(t["recipient"], want, t["want_points"]):
+                raise ValueError("You don't have everything they asked for any more.")
+            stamp = now_iso()
+            with self.db:  # all or nothing
+                for it in give:
+                    self.take(t["sender"], it)
+                    self.grant(t["recipient"], it, commit=False)
+                for it in want:
+                    self.take(t["recipient"], it)
+                    self.grant(t["sender"], it, commit=False)
+                for frm, to, n in ((t["sender"], t["recipient"], t["give_points"]),
+                                   (t["recipient"], t["sender"], t["want_points"])):
+                    if n:
+                        self.db.execute("UPDATE users SET points = points - ? WHERE id = ?", (n, frm))
+                        self.db.execute("UPDATE users SET points = points + ? WHERE id = ?", (n, to))
+                        self.db.execute("INSERT INTO ledger (user_id, amount, reason, created) VALUES (?, ?, ?, ?), "
+                                        "(?, ?, ?, ?)", (frm, -n, f"trade: #{t['id']}", stamp, to, n, f"trade: #{t['id']}", stamp))
+                self.db.execute("UPDATE trades SET status = 'accepted', done = ? WHERE id = ?", (stamp, t["id"]))
+        else:
+            self.db.execute("UPDATE trades SET status = ?, done = ? WHERE id = ?",
+                            ("declined" if action == "decline" else "cancelled", now_iso(), t["id"]))
+            self.db.commit()
+        return self.trade(t["id"])
+
+    def trade_view(self, t: sqlite3.Row) -> dict:
+        names = {r["id"]: r["name"] for r in self.db.execute("SELECT id, name FROM users WHERE id IN (?, ?)",
+                                                              (t["sender"], t["recipient"]))}
+        return {"id": t["id"], "from": names.get(t["sender"]), "to": names.get(t["recipient"]),
+                "give": json.loads(t["give"]), "give_points": t["give_points"],
+                "want": json.loads(t["want"]), "want_points": t["want_points"],
+                "status": t["status"], "created": t["created"], "done": t["done"]}
+
+    def trades_for(self, user_id: int) -> dict:
+        rows = self.db.execute("SELECT * FROM trades WHERE (sender = ? OR recipient = ?) AND status = 'open' "
+                               "ORDER BY id DESC", (user_id, user_id)).fetchall()
+        done = self.db.execute("SELECT * FROM trades WHERE (sender = ? OR recipient = ?) AND status != 'open' "
+                               "ORDER BY id DESC LIMIT 10", (user_id, user_id)).fetchall()
+        return {"incoming": [self.trade_view(t) for t in rows if t["recipient"] == user_id],
+                "outgoing": [self.trade_view(t) for t in rows if t["sender"] == user_id],
+                "history": [self.trade_view(t) for t in done]}
+
+    def best_run(self, category: str) -> sqlite3.Row | None:
+        """The world record run of a category (its whole run file), with who set it."""
+        return self.db.execute("SELECT runs.run, runs.time_ms, runs.created, users.name FROM runs JOIN users "
+                               "ON users.id = runs.user_id WHERE runs.category = ? ORDER BY runs.time_ms, "
+                               "runs.created LIMIT 1", (category,)).fetchone()
+
     # -- daily challenges
 
     @staticmethod
@@ -805,7 +1113,7 @@ class Database:
                                    "GROUP BY user_id", builtin).fetchall())
         # (selling on the market only moves points between players, so it isn't earning)
         earned = dict(self.db.execute("SELECT user_id, SUM(amount) FROM ledger WHERE amount > 0 "
-                                      "AND reason NOT LIKE 'duplicate%' AND reason NOT LIKE 'market:%' "
+                                      "AND reason NOT LIKE 'duplicate%' AND reason NOT LIKE 'market:%' AND reason NOT LIKE 'trade:%' "
                                       "GROUP BY user_id").fetchall())
         # (skins don't count towards the score; the count is still sent for games from before 2.6)
         skins = dict(self.db.execute("SELECT user_id, COUNT(*) FROM inventory WHERE item LIKE 'skin:%' "
@@ -826,17 +1134,24 @@ class Database:
 
     # -- community categories
 
-    def share_category(self, definition: dict, user_id: int) -> str:
-        """Add a custom category to the community list (the first to share it is its creator)."""
+    def share_category(self, definition: dict, user_id: int) -> tuple[str, bool]:
+        """Add a custom category to the community list (the first to share it is its creator).
+
+        Returns (its id, whether it's new: the same rules shared before are the same category)."""
         cat = category_from_def(definition)
         if any(m not in BUILTIN_MODE_IDS for m in cat.modes):
             raise ValueError("Categories using mods can't be shared.")
-        clean = {k: definition.get(k) for k in ("w", "h", "modes", "goal", "fruit_count", "tick_ms", "fruit")}
-        clean.update(id=cat.id, name=cat.name)
-        self.db.execute("INSERT OR IGNORE INTO categories VALUES (?, ?, ?, ?, ?)",
-                        (cat.id, json.dumps(clean), cat.name, user_id, now_iso()))
+        if self.db.execute("SELECT 1 FROM categories WHERE id = ?", (cat.id,)).fetchone():
+            return cat.id, False
+        if self.db.execute("SELECT COUNT(*) FROM categories WHERE creator = ?", (user_id,)).fetchone()[0] \
+                >= MAX_CATEGORIES_EACH:
+            raise ValueError(f"You've made {MAX_CATEGORIES_EACH} community categories, the most anyone can.")
+        clean = category_def(cat)  # (the rules as the category has them)
+        clean["name"] = clean_text(clean["name"], MAX_CATEGORY_NAME) or "Custom"
+        self.db.execute("INSERT INTO categories VALUES (?, ?, ?, ?, ?)",
+                        (cat.id, json.dumps(clean), clean["name"], user_id, now_iso()))
         self.db.commit()
-        return cat.id
+        return cat.id, True
 
     def rename_category(self, category_id: str, user_id: int, name) -> str:
         """Rename a community category; only the player who made it can."""
@@ -1148,6 +1463,7 @@ class Server:
         self.last_round: dict[int, float] = {}       # account id -> when its last round was paid
         self.last_message: dict[int, float] = {}     # account id -> when it last sent a message
         self.settle_task: asyncio.Task | None = None
+        self.jackpot_task: asyncio.Task | None = None
 
     def new_pid(self) -> int:
         self.next_pid += 1
@@ -1222,6 +1538,15 @@ class Server:
         r.add_post("/api/market/cancel", self.market_cancel)
         r.add_post("/api/market/buy", self.market_buy)
         r.add_get("/api/daily", self.daily)
+        r.add_get("/api/login-reward", self.login_reward)
+        r.add_post("/api/login-reward/claim", self.claim_login_reward)
+        r.add_get("/api/trades", self.trades)
+        r.add_post("/api/trades", self.offer_trade)
+        r.add_post("/api/trades/answer", self.answer_trade)
+        r.add_get("/api/users/{name}/items", self.user_items)
+        r.add_get("/api/replay/{category}", self.replay_run)
+        r.add_get("/api/jackpot", self.jackpot)
+        r.add_post("/api/jackpot/enter", self.jackpot_enter)
         r.add_post("/api/daily/claim", self.claim_daily)
         r.add_get("/api/messages", self.chats)
         r.add_get("/api/messages/{name}", self.conversation)
@@ -1259,10 +1584,26 @@ class Server:
                 await asyncio.sleep(3600)
         self.settle_task = asyncio.create_task(settle_hourly())
 
+        async def draw_jackpots():
+            while True:
+                await asyncio.sleep(1)
+                try:
+                    result = self.db.jackpot_tick()
+                except Exception as e:  # (never let one bad draw stop the loop)
+                    print(f"opensnake: jackpot draw failed: {e}", flush=True)
+                    continue
+                if result and "winner" in result:
+                    for uid in result["players"]:
+                        await self.notify(uid, {"t": "jackpot", "round": result["round"], "winner": result["winner_name"],
+                                                "total": result["total"], "you_won": uid == result["winner"]})
+        self.jackpot_task = asyncio.create_task(draw_jackpots())
+
     async def shutdown(self, app: web.Application) -> None:
         """Stop running matches and close the database (Windows can't delete open files)."""
         if self.settle_task:
             self.settle_task.cancel()
+        if self.jackpot_task:
+            self.jackpot_task.cancel()
         for room in list(self.rooms.values()):
             if room.task:
                 room.task.cancel()
@@ -1461,6 +1802,90 @@ class Server:
                                    "buyer": user["name"]})
         return web.json_response(result)
 
+    # -- daily login rewards
+    async def login_reward(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in for daily rewards.")
+        return web.json_response(self.db.login_reward_info(user["id"]))
+
+    async def claim_login_reward(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in for daily rewards.")
+        try:
+            return web.json_response(self.db.claim_login_reward(user["id"]))
+        except ValueError as e:
+            return self.error(str(e))
+
+    # -- trading
+    async def trades(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to trade.")
+        return web.json_response(self.db.trades_for(user["id"]))
+
+    async def user_items(self, request: web.Request) -> web.Response:
+        """What a player has to trade (their items, with how many copies)."""
+        row = self.db.user_row(request.match_info["name"])
+        if not row:
+            return self.error("No player with that name.", 404)
+        return web.json_response({"name": row["name"], "items": self.db.tradeable_counts(row["id"])})
+
+    async def offer_trade(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to trade.")
+        d = await self.body(request)
+        try:
+            tid = self.db.offer_trade(user["id"], str(d.get("to", "")), d.get("give", []), d.get("give_points", 0),
+                                      d.get("want", []), d.get("want_points", 0))
+        except LookupError as e:
+            return self.error(str(e), 404)
+        except ValueError as e:
+            return self.error(str(e))
+        t = self.db.trade(tid)
+        await self.notify(t["recipient"], {"t": "trade", "from": user["name"], "id": tid})
+        return web.json_response(self.db.trade_view(t))
+
+    async def answer_trade(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to trade.")
+        d = await self.body(request)
+        action = d.get("action")
+        if action not in ("accept", "decline", "cancel"):
+            return self.error("Accept, decline or cancel?")
+        try:
+            t = self.db.answer_trade(user["id"], d.get("id"), action)
+        except LookupError as e:
+            return self.error(str(e), 404)
+        except PermissionError as e:
+            return self.error(str(e), 403)
+        except ValueError as e:
+            return self.error(str(e))
+        other = t["sender"] if t["recipient"] == user["id"] else t["recipient"]
+        await self.notify(other, {"t": "trade", "from": user["name"], "id": t["id"], "status": t["status"]})
+        return web.json_response({**self.db.trade_view(t), "points": self.db.points(user["id"])})
+
+    # -- the jackpot
+    async def jackpot(self, request: web.Request) -> web.Response:
+        return web.json_response(self.db.jackpot_state())
+
+    async def jackpot_enter(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to play the jackpot.")
+        try:
+            self.db.jackpot_enter(user["id"], (await self.body(request)).get("items"))
+        except ValueError as e:
+            return self.error(str(e))
+        return web.json_response(self.db.jackpot_state())
+
+    # -- watching world records
+    async def replay_run(self, request: web.Request) -> web.Response:
+        """A category's world record run, to watch. Built-in and weekly categories only."""
+        category = request.match_info["category"]
+        if category.startswith(CUSTOM_PREFIX):
+            return self.error("Community runs can't be watched.", 404)
+        if category not in CATEGORY_BY_ID and not category.startswith(WEEKLY_PREFIX):
+            return self.error("Unknown category.", 404)
+        best = self.db.best_run(category)
+        if not best:
+            return self.error("No world record yet.", 404)
+        run = json.loads(best["run"])
+        return web.json_response({"player": best["name"], "time_ms": best["time_ms"], "date": best["created"][:10],
+                                  "run": {k: run.get(k) for k in ("format", "game", "category", "seed", "time_ms",
+                                                                  "inputs", "splits_ms")}})
+
     # -- daily challenges
     async def daily(self, request: web.Request) -> web.Response:
         user = self.account(request, "Log in for daily challenges.")
@@ -1586,10 +2011,12 @@ class Server:
         user = self.account(request, "Log in to share categories.")
         definition = (await self.body(request)).get("def")
         try:
-            cid = self.db.share_category(definition if isinstance(definition, dict) else {}, user["id"])
+            cid, new = self.db.share_category(definition if isinstance(definition, dict) else {}, user["id"])
         except (KeyError, TypeError, ValueError) as e:
-            return self.error(f"Can't share that category: {e}")
-        return web.json_response({"id": cid})
+            return self.error(f"Can't share that category: {str(e).strip(chr(39))}")
+        row = self.db.db.execute("SELECT categories.name, users.name AS creator FROM categories "
+                                 "JOIN users ON users.id = categories.creator WHERE categories.id = ?", (cid,)).fetchone()
+        return web.json_response({"id": cid, "new": new, "name": row["name"], "creator": row["creator"]})
 
     # -- world records
     async def records(self, request: web.Request) -> web.Response:

@@ -59,6 +59,12 @@ come back with a 4xx status and `{"error": "a sentence to show the player"}`;
 | `POST /api/market/list` | `{item, price}` | put one copy up for sale |
 | `POST /api/market/cancel` | `{id}` | take a listing down (the copy comes back) |
 | `POST /api/market/buy` | `{id}` | `{item, name, price, fee, points, copies}`; the seller is told live with `sold` |
+| `GET /api/users/{name}/items` | | `{name, items: {item: copies}}`: what a player could trade |
+| `GET /api/trades` | | `{incoming, outgoing, history}`: trade offers (`from`, `to`, `give`, `give_points`, `want`, `want_points`, `status`) |
+| `POST /api/trades` | `{to, give, give_points, want, want_points}` | offer a trade (up to 12 items a side; ranked skins can't be traded); the other player is told live with `trade` |
+| `POST /api/trades/answer` | `{id, action}` | `accept` or `decline` one offered to you, `cancel` your own; everything moves at once, or nothing does |
+| `GET /api/jackpot` | | the pot: `{round, players: [{name, avatar, items, value, chance}], total, seconds_left, countdown, last, history}`. `last` is the latest draw (its `winner` and players), for the winner animation |
+| `POST /api/jackpot/enter` | `{items}` | put up to 20 skins or packs in the pot (held until the draw). The draw is 45 s after a second player joins; one player wins everything, their chance being their share of the pot's value (an item's shop price, or else a value by rarity). Players in the draw are told with `jackpot` (`winner`, `total`, `you_won`). A pot nobody else joins in 24 h goes back to its player |
 
 ### Battle pass and daily challenges
 
@@ -69,6 +75,8 @@ come back with a 4xx status and `{"error": "a sentence to show the player"}`;
 | `POST /api/battlepass/claim` | `{level}` | `{tier, ...}` (points, or a loot box opening, or an item) |
 | `GET /api/daily` | | `{day, left, challenges: [{id, text, goal, progress, done, claimed, reward}], bonus, bonus_ready, bonus_claimed}` |
 | `POST /api/daily/claim` | `{id}` (0 to 2, or `"bonus"`) | the daily info and your new `points` |
+| `GET /api/login-reward` | | `{ready, streak, step, rewards, milestones}`: today's login reward. A 30-day ladder, better each day in a row; `rewards` names each day, `milestones` the big ones (`{day, reward}`, e.g. day 15: 250,000 snake points, day 30: 2 Royal Crates and 500,000) |
+| `POST /api/login-reward/claim` | | `{kind, reward, points, opened}`: `opened` lists every loot box the day gave (`{crate, item, new, copies}`); the first one is also at the top level |
 
 ### Speedruns and leaderboards
 
@@ -82,6 +90,7 @@ come back with a 4xx status and `{"error": "a sentence to show the player"}`;
 | `POST /api/categories/vote` | `{id, up}` | `{id, votes, voted}`: upvote one (not your own), or `up: false` to take it back |
 | `POST /api/categories/rename` | `{id, name}` | rename a community category you made |
 | `GET /api/rankings` | | `{players, me, total, parts}`: everyone's score out of 100 |
+| `GET /api/replay/{category}` | | `{player, time_ms, date, run}`: a built-in or weekly category's world record run (seed and inputs), to watch |
 | `GET /api/matches?q=` | | `{total, matches}`: public versus matches to join |
 | `GET /api/clients` | | `{default, clients: [{name, path}]}`: the web clients this site serves |
 
@@ -117,8 +126,9 @@ Every message is a JSON object with a type in `t`.
 move), `over` (`winner`, `scores`), `reward` (`points`, `balance`, `ranked`,
 `rp`, `rp_change`, `rank`, `rank_ups`), `error` (`msg`), `pong`, plus pushes
 that can come at any time: `invite` (`from`, `code`, `match`), `invited`,
-`friends` (refresh the friend list), `dm` (a message) and `sold` (your market
-listing sold).
+`friends` (refresh the friend list), `dm` (a message), `sold` (your market
+listing sold), `trade` (a trade offered to you, or the `status` of one of yours)
+and `jackpot` (a pot you were in was drawn).
 
 **The game state** (`state` and `start`) has `w`, `h`, `tick`, `over`,
 `winner`, `started`, `goal`, `modes`, `dim`, and:
@@ -163,15 +173,19 @@ A run file:
 - `inputs` holds each turn and the tick it was pressed on.
 - `time_ms` is the in-game time: the sum of every move's length, rounded half
   to even.
-- Custom categories also send `category_def` (their rules). Their id is a hash
-  of those rules.
+- Custom categories also send `category_def` (their rules: `w`, `h`, `modes`,
+  `goal`, `fruit_count`, `tick_ms`, `fruit`, and `accel` for Accelerate, the ms
+  faster per fruit eaten, down to 45 ms). Their id is a hash of those rules
+  (`accel` is only included when it isn't 0). `POST /api/categories {def}` shares
+  one in Community without playing it first.
 
 ## The catalogue
 
 Skins, packs, loot boxes, ranks, modes and the built-in speedrun categories
 are defined in `opensnake/cosmetics.py`, `modes.py` and `speedrun.py`.
 `tools/export_catalog.py` exports them as `catalog.json` for clients written in
-other languages. Item ids are `"skin:<id>"` and `"pack:<id>"`; skins carry
+other languages. A crate with a `series` (the Holiday Crate) gives only that
+series' skins, which no other crate gives. Item ids are `"skin:<id>"` and `"pack:<id>"`; skins carry
 their colour pattern, so every client can draw them the same way.
 
 ## Web clients on a site

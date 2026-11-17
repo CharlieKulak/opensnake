@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opensnake"
-version = "3.0.0"
+version = "3.1.0"
 description = "OpenSnake: the server for snake games (accounts, points, records, versus) and the game rules its clients share"
 readme = "README.md"
 license = "BSD-3-Clause"
