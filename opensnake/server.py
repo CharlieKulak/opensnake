@@ -505,7 +505,7 @@ class Database:
         if cos.item_rarity(item) is None:
             raise ValueError("Unknown item.")
         if item in cos.UNTRADEABLE:
-            raise ValueError("Ranked skins can't be sold.")
+            raise ValueError("Ranked and gift skins can't be sold.")
         try:
             price = int(price)
         except (TypeError, ValueError):
@@ -832,7 +832,7 @@ class Database:
             if cos.item_rarity(it) is None:
                 raise ValueError("Unknown item.")
             if it in cos.UNTRADEABLE:
-                raise ValueError("Ranked skins can't go in the jackpot.")
+                raise ValueError("Ranked and gift skins can't go in the jackpot.")
         rnd = self.jackpot_round(now)
         if rnd["ends"] and _parse_iso(rnd["ends"]) <= now:
             raise ValueError("The draw's happening: get in the next one.")
@@ -930,7 +930,7 @@ class Database:
             if cos.item_rarity(it) is None:
                 raise ValueError("Unknown item.")
             if it in cos.UNTRADEABLE:
-                raise ValueError("Ranked skins can't be traded.")
+                raise ValueError("Ranked and gift skins can't be traded.")
         return items
 
     @staticmethod

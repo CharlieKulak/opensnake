@@ -16,14 +16,14 @@ from opensnake.speedrun import CATEGORY_BY_ID, make_custom  # noqa: E402
 
 class CatalogueTests(ServerTestCase):
     def test_skins_with_the_rarest_only_in_loot_boxes(self):
-        self.assertEqual(len(cos.SKINS), 137)
-        self.assertEqual(len({s.id for s in cos.SKINS}), 137)
+        self.assertEqual(len(cos.SKINS), 138)
+        self.assertEqual(len({s.id for s in cos.SKINS}), 138)
         stands = [s for s in cos.SKINS if s.series == "Stand"]
         self.assertEqual(len(stands), 34)
         self.assertTrue(all(not s.shop for s in stands))
         for s in cos.SKINS:
             self.assertIn(s.rarity, cos.RARITIES)
-            if s.rarity in ("epic", "legendary", "mythic") or s.series in ("Pass", "Ranked", "Holiday"):
+            if s.rarity in ("epic", "legendary", "mythic") or s.series in ("Pass", "Ranked", "Holiday", "Gift"):
                 self.assertFalse(s.shop, s.id)
             else:
                 self.assertTrue(s.shop, s.id)
@@ -892,7 +892,7 @@ class TradeTests(ServerTestCase):
         db.grant(1, "skin:mint")
         db.grant(2, "skin:sky")
         cases = [({"to": "alice"}, "That's you"), ({"to": "nobody"}, "No player"),
-                 ({"give": ["skin:rk_cobra"], "want": ["skin:sky"]}, "Ranked skins"),
+                 ({"give": ["skin:rk_cobra"], "want": ["skin:sky"]}, "can't be traded"),
                  ({"give": ["skin:sky"], "want": ["skin:sky"]}, "don't have everything"),
                  ({"give": ["skin:mint"], "want": ["skin:mint"]}, "doesn't have everything"),
                  ({"give": ["skin:mint"], "want": []}, "both sides"),
@@ -985,3 +985,22 @@ class JackpotTests(ServerTestCase):
     def test_values(self):
         self.assertEqual(cos.item_value("skin:galaxy"), cos.shop_price("skin:galaxy") or cos.RARITY_VALUE[cos.item_rarity("skin:galaxy")])
         self.assertEqual(cos.item_value("skin:snowflake"), cos.RARITY_VALUE[cos.item_rarity("skin:snowflake")])
+
+
+class GiftSkinTests(ServerTestCase):
+    async def test_a_gift_skin_stays_put(self):
+        a, b = await self.account("alice"), await self.account("bobby")
+        db = self.server.db
+        db.grant(1, "skin:gambledtoomuch")
+        self.assertIn("skin:gambledtoomuch", cos.UNTRADEABLE)
+        self.assertFalse(any("skin:gambledtoomuch" in cos.items_of(r) for r in cos.RARITIES))
+        self.assertIsNone(cos.shop_price("skin:gambledtoomuch"))
+        status, r = await self.post("/api/market/list", {"item": "skin:gambledtoomuch", "price": 500}, a)
+        self.assertIn("can't be sold", r["error"])
+        status, r = await self.post("/api/trades", {"to": "bobby", "give": ["skin:gambledtoomuch"], "want": [],
+                                                    "want_points": 100}, a)
+        self.assertIn("can't be traded", r["error"])
+        status, r = await self.post("/api/jackpot/enter", {"items": ["skin:gambledtoomuch"]}, a)
+        self.assertIn("can't go in the jackpot", r["error"])
+        self.assertEqual(db.copies(1, "skin:gambledtoomuch"), 1)
+        self.assertEqual((await self.post("/api/profile", {"skin": "gambledtoomuch"}, a))[0], 200)

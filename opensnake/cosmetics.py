@@ -411,6 +411,11 @@ SKINS = [
     _skin("rk_basilisk", "Basilisk Gaze", "mythic", "chevron", ["#1a1400", "#ffcc00"], "#fff3b0", glow=True,
           series="Ranked"),
 
+    # Gifts: one-off skins the site owner gives by hand. Not in the shop, loot boxes or the pass,
+    # and they can't be sold, traded or put in the jackpot.
+    _skin("gambledtoomuch", "aogski gambled to much", "common", "dunce", ["#f4eedc", "#c9c2ae", "#3a3a3a"],
+          "#8c8672", series="Gift"),
+
     # Holiday: Thanksgiving and Christmas, only from the Holiday Crate
     _skin("cranberry", "Cranberry Sauce", "uncommon", "grad", ["#9b1b30", "#e0435c"], "#5e0f1d", series="Holiday"),
     _skin("pumpkinpie", "Pumpkin Pie", "rare", "stripes", ["#d9772b", "#d9772b", "#f6e3c2"], "#8a4a1c",
@@ -509,6 +514,8 @@ def skin_color(skin: Skin, i: int, n: int, now: float) -> tuple:
     if skin.pattern == "spark":  # crackling sparks over a dark body
         base = _lerp(c[0], c[1], 0.3 + 0.3 * math.sin(i * 0.8 + now / 300))
         return _lerp(base, c[2], 1.0 if _hash01(i, int(now // 90)) > 0.88 else 0.0)
+    if skin.pattern == "dunce":  # paper like a dunce cap: cream, with a grey band every few cells
+        return c[1] if i % 4 == 3 else c[0]
     if skin.pattern == "lights":  # a string of coloured bulbs, twinkling on and off
         bulb = c[i % len(c)]
         on = _hash01(i, int(now // 450)) > 0.25
@@ -638,7 +645,8 @@ CRATE_BY_ID = {c.id: c for c in CRATES}
 
 PASS_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Pass"}
 RANKED_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Ranked"}
-UNTRADEABLE = RANKED_ONLY  # earned by climbing the ranks, so they can't be sold or traded
+GIFT_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Gift"}
+UNTRADEABLE = RANKED_ONLY | GIFT_ONLY  # earned by climbing the ranks, or given by hand: can't be sold or traded
 # skins only a themed crate gives (the Holiday Crate's)
 THEMED_ONLY = {f"skin:{s.id}" for s in SKINS if s.series in {c.series for c in CRATES if c.series}}
 
@@ -648,7 +656,7 @@ def items_of(rarity: str, series: str = "") -> list[str]:
     pool (not the battle pass, ranked or themed crates' skins)."""
     if series:
         return [f"skin:{s.id}" for s in SKINS if s.series == series and s.rarity == rarity]
-    return [it for it in ALL_ITEMS if item_rarity(it) == rarity and it not in PASS_ONLY | RANKED_ONLY | THEMED_ONLY]
+    return [it for it in ALL_ITEMS if item_rarity(it) == rarity and it not in PASS_ONLY | RANKED_ONLY | THEMED_ONLY | GIFT_ONLY]
 
 
 # ---- the player market ----------------------------------------------------------------
