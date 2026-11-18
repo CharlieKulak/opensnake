@@ -78,6 +78,22 @@ come back with a 4xx status and `{"error": "a sentence to show the player"}`;
 | `GET /api/login-reward` | | `{ready, streak, step, rewards, milestones}`: today's login reward. A 30-day ladder, better each day in a row; `rewards` names each day, `milestones` the big ones (`{day, reward}`, e.g. day 15: 250,000 snake points, day 30: 2 Royal Crates and 500,000) |
 | `POST /api/login-reward/claim` | | `{kind, reward, points, opened}`: `opened` lists every loot box the day gave (`{crate, item, new, copies}`); the first one is also at the top level |
 
+### Story mode
+
+Eight chapters of ten levels, each ending in a boss duel (`opensnake/story.py`; the
+catalogue's `story` has every level, challenge and boss). A level is played like a speedrun
+(category `story-s1-01` and so on, built from the level's rules) and checked by replaying it.
+
+| Request | Body | Reply |
+| --- | --- | --- |
+| `GET /api/story` | | the chapters, with your `stars`, `best_ms` and `unlocked` on each level, and `beaten`/`unlocked` on each boss (no account: nothing unlocked past the first level) |
+| `POST /api/story/run` | a run file | `{valid, stars, earned: [3 booleans], new_stars, points_earned, best_ms, next, next_unlocked, points}`. Each star pays once (more per star in later chapters) |
+
+Levels unlock in order; a boss needs its chapter's ten levels, and the next chapter needs the
+boss beaten. Star 1 is finishing; stars 2 and 3 are the level's challenges (`time`: finish in
+`a` ms; `turns`: at most `a` turns; `split`: the first `a` fruit in `b` ms; `noshield`: no
+shield used up).
+
 ### Speedruns and leaderboards
 
 | Request | Body | Reply |
@@ -119,6 +135,25 @@ Every message is a JSON object with a type in `t`.
 | `invite` | `name` | invite an online friend |
 | `start` / `rematch` | | the host starts, or starts again after a match |
 | `input` | `d`, `step` | turn (`up`, `down`, `left`, `right`). `step` is the move it's for (see below) |
+
+**Battles.** A room whose settings have `"format": "battle"` (up to 4 players, people or
+bots; always unranked) is played like a boss duel: everyone gets their own board, combos send
+junk to the opponent with the least already coming, and the last snake going wins. The
+messages are the duel ones below, with `duel_start` also carrying `mode: "battle"`, `you`
+(your board) and `players`; attack events say who they went to; `out` events say who crashed;
+`duel_over` has `place`, `of`, `winner`, `points_earned` and `balance`.
+
+**Boss duels (story mode).** Send `{"t": "duel", "boss": n}` (logged in, the boss
+unlocked). You and the boss each get a board. The server sends `duel_start` (`boss`,
+`tick_ms`, `state`), `duel_countdown` (`n`, then 0), a `duel_state` every move (`s`:
+`{tick, tick_ms, over, winner, sides: [yours, the boss's], events, next_signature, sudden}`)
+and `duel_over` (`won`, `seconds`, `best_chain`, `sent`; on a win `first`, `rewards`,
+`points_earned` and `opened`: loot boxes and the boss's skin). Each side is a game state plus
+`arrows`, `temp` (walls that melt), `chain`, `chain_left`, `incoming` (`[[junk, moves till it
+drops]]`), `fog`, `overclock`, `best_chain` and `sent`. Steer your board with `input` as in
+versus (`step` is your board's move). Fruit eaten within a few moves of each other is a
+combo; when it ends it sends junk (1, 2, 4, 6, 9, 12, 16, then 4 more a fruit), cancelling
+junk coming your way first. `leave` gives the duel up.
 
 **From the server:** `room` (the lobby: players, teams, settings, `host`,
 `code`, `ranked`, `public`), `start` (`state`, `you`: your snake's index,

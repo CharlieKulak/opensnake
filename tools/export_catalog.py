@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
-from opensnake import __version__, cosmetics as cos  # noqa: E402
+from opensnake import __version__, cosmetics as cos, story  # noqa: E402
 from opensnake.game import game_to_state  # noqa: E402
 from opensnake.modes import (CONFLICTS, MODES, SNAKE_COLORS, SPEED_TICKS, VERSUS_MODES,  # noqa: E402
                              VERSUS_SIZES)
@@ -52,6 +52,7 @@ def catalog() -> dict:
         "ranks": [{"rp": lo, "name": name, "color": hexcol(col),
                    "rewards": cos.rank_reward_names(i)} for i, (lo, name, col) in enumerate(cos.RANKS)],
         "untradeable": sorted(cos.UNTRADEABLE),
+        "story": story.story_def(),
         "pass_only": sorted(cos.PASS_ONLY),
         "avatar_icons": cos.AVATAR_ICONS,
         "avatar_colors": [hexcol(c) for c in cos.AVATAR_COLORS],
@@ -94,6 +95,7 @@ def golden() -> dict:
         make_custom(10, 9, ["poison", "borderless", "twin", "statue"], 8, 2, 130),
         make_custom(9, 8, ["cheese", "arrow", "shield", "light"], 10, 1, 130),
         make_custom(12, 11, ["wall"], 12, 1, 160, accel=5),
+        story.LEVEL_BY_ID["s4-10"].category, story.LEVEL_BY_ID["s8-06"].category, story.LEVEL_BY_ID["s8-05"].category,
     ]
     runs = []
     for c in cats:

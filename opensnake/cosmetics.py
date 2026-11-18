@@ -411,8 +411,26 @@ SKINS = [
     _skin("rk_basilisk", "Basilisk Gaze", "mythic", "chevron", ["#1a1400", "#ffcc00"], "#fff3b0", glow=True,
           series="Ranked"),
 
+    # Story mode: one for beating each boss. Can't be bought or rolled, but can be sold and traded.
+    _skin("st_knight", "Worm Knight", "uncommon", "scales", ["#8a94a6", "#d6dbe3"], "#c0392b", series="Story"),
+    _skin("st_mamba", "Swamp Queen", "rare", "aurora", ["#0f3d1e", "#1f7a3a", "#a5d65a", "#f5c518"], "#f5c518",
+          series="Story"),
+    _skin("st_coil", "Clockwork Coil", "rare", "circuit", ["#5a3a14", "#8a5a24", "#4fc3f7"], "#e8c27a",
+          series="Story"),
+    _skin("st_frost", "Frostfang", "epic", "shimmer", ["#5fb4e8", "#ffffff"], "#e6f6ff", glow=True, series="Story"),
+    _skin("st_pyra", "Ember Serpent", "epic", "lava", ["#3a0a05", "#b3261e", "#ffd54f"], "#ff8a3d", glow=True,
+          series="Story"),
+    _skin("st_umbra", "Shadow Coil", "legendary", "galaxy", ["#120a1e", "#2a1b3d", "#b388ff"], "#b388ff", glow=True,
+          series="Story"),
+    _skin("st_gear", "Iron Constrictor", "legendary", "circuit", ["#3a4048", "#5a6270", "#ff5252"], "#aab3bf",
+          glow=True, series="Story"),
+    _skin("st_ouroboros", "The Ouroboros", "mythic", "ouroboros", ["#0f3d2e", "#2fbf71", "#ffd54f"], "#ffd54f",
+          glow=True, series="Story"),
+
     # Gifts: one-off skins the site owner gives by hand. Not in the shop, loot boxes or the pass,
     # and they can't be sold, traded or put in the jackpot.
+    _skin("moderator", "Moderator", "mythic", "moderator", ["#0b1f4d", "#1d4ed8", "#facc15"], "#facc15", glow=True,
+          series="Gift"),
     _skin("gambledtoomuch", "aogski gambled to much", "common", "dunce", ["#f4eedc", "#c9c2ae", "#3a3a3a"],
           "#8c8672", series="Gift"),
 
@@ -514,6 +532,14 @@ def skin_color(skin: Skin, i: int, n: int, now: float) -> tuple:
     if skin.pattern == "spark":  # crackling sparks over a dark body
         base = _lerp(c[0], c[1], 0.3 + 0.3 * math.sin(i * 0.8 + now / 300))
         return _lerp(base, c[2], 1.0 if _hash01(i, int(now // 90)) > 0.88 else 0.0)
+    if skin.pattern == "ouroboros":  # emerald scales, with a golden ring chasing round from tail to head
+        base = _lerp(c[0], c[1], 0.5 + 0.5 * math.sin(i * 0.9 + now / 400))
+        ring = (n + 4) - (now / 85) % (n + 8)
+        return _lerp(base, c[2], max(0.0, 1 - abs(i - ring) / 2.2))
+    if skin.pattern == "moderator":  # navy and blue bands with a gold sweep, like a badge catching the light
+        base = c[1] if (i // 2) % 2 else c[0]
+        sweep = (now / 70) % (n + 10) - 5
+        return _lerp(base, c[2], max(0.0, 1 - abs(i - sweep) / 1.8))
     if skin.pattern == "dunce":  # paper like a dunce cap: cream, with a grey band every few cells
         return c[1] if i % 4 == 3 else c[0]
     if skin.pattern == "lights":  # a string of coloured bulbs, twinkling on and off
@@ -646,6 +672,7 @@ CRATE_BY_ID = {c.id: c for c in CRATES}
 PASS_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Pass"}
 RANKED_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Ranked"}
 GIFT_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Gift"}
+STORY_ONLY = {f"skin:{s.id}" for s in SKINS if s.series == "Story"}
 UNTRADEABLE = RANKED_ONLY | GIFT_ONLY  # earned by climbing the ranks, or given by hand: can't be sold or traded
 # skins only a themed crate gives (the Holiday Crate's)
 THEMED_ONLY = {f"skin:{s.id}" for s in SKINS if s.series in {c.series for c in CRATES if c.series}}
@@ -656,7 +683,7 @@ def items_of(rarity: str, series: str = "") -> list[str]:
     pool (not the battle pass, ranked or themed crates' skins)."""
     if series:
         return [f"skin:{s.id}" for s in SKINS if s.series == series and s.rarity == rarity]
-    return [it for it in ALL_ITEMS if item_rarity(it) == rarity and it not in PASS_ONLY | RANKED_ONLY | THEMED_ONLY | GIFT_ONLY]
+    return [it for it in ALL_ITEMS if item_rarity(it) == rarity and it not in PASS_ONLY | RANKED_ONLY | THEMED_ONLY | GIFT_ONLY | STORY_ONLY]
 
 
 # ---- the player market ----------------------------------------------------------------

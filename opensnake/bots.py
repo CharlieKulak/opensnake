@@ -16,6 +16,10 @@ LEVELS = ["easy", "normal", "hard"]
 LEVEL_NAMES = {"easy": "Easy", "normal": "Normal", "hard": "Hard"}
 WANDER = {"easy": 0.2, "normal": 0.05, "hard": 0.0}   # chance of an aimless (but safe) move
 DANGER = {"easy": 12, "normal": 25, "hard": 60}         # how hard it avoids possible head-ons
+# Story-mode bosses (duel.py): sloppier early on, flawless at the end.
+WANDER.update({"boss1": 0.12, "boss2": 0.1, "boss3": 0.08, "boss4": 0.06, "boss5": 0.04, "boss6": 0.02,
+               "boss7": 0.01, "boss8": 0.0})
+DANGER.update({f"boss{i}": 60 for i in range(1, 9)})
 BOT_NAMES = ["Ada", "Basil", "Cleo", "Dex", "Echo", "Fern", "Gus", "Hiss", "Ivy", "Jinx", "Kai", "Luna",
              "Milo", "Nyx", "Ozzy", "Pip", "Quill", "Rex", "Sly", "Tess", "Vex", "Wren", "Zed"]
 
@@ -24,7 +28,8 @@ def _blocked(game) -> set:
     """Cells a head can't move into this tick."""
     out = {k for k, w in game.walls.items() if game.wall_active(w)}
     out.update((g.x, g.y) for g in game.gates if not g.open)
-    out.update((a.x, a.y) for a in game.apples if a.locked)
+    out.update((a.x, a.y) for a in game.apples if a.locked or a.poison)  # (poison is deadly to eat)
+    out.update(game.arrows)  # (arrow tiles turn you without asking)
     cheese = game.has("cheese")
     for s in game.snakes:
         if s.dead:

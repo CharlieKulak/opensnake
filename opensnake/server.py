@@ -81,8 +81,10 @@ from aiohttp import WSMsgType, web
 
 from . import __version__
 from . import cosmetics as cos
+from . import story
 from .bots import BOT_NAMES, LEVEL_NAMES, LEVELS
 from .bots import choose as bot_choose
+from .duel import BOSS, BOT_SLOPPY, YOU, Battle, Duel
 from .game import DIRS, MAX_LATE_MOVES, Game, game_to_state
 from .modes import BUILTIN_MODE_IDS, VERSUS_MODES, VERSUS_SIZES, speed_ms
 from .speedrun import (CATEGORY_BY_ID, CUSTOM_PREFIX, WEEKLY_PREFIX, category_def, category_from_def,
@@ -101,7 +103,8 @@ MIN_PASSWORD = 4
 CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"  # no I or O, which look like 1 and 0
 
 MAX_TEAM = 4
-DEFAULT_SETTINGS = {"size": "medium", "speed": 0.5, "apples": 3, "goal": 0, "modes": []}
+DEFAULT_SETTINGS = {"size": "medium", "speed": 0.5, "apples": 3, "goal": 0, "modes": [], "format": "classic"}
+MAX_BATTLE = 4  # "battle" format: everyone on their own board, combos send junk (duel.py)
 MAX_MATCH_NAME = 32
 MAX_LISTED = 50  # public matches returned per search
 MAX_BIO = 160
@@ -185,6 +188,10 @@ class Database:
                 id INTEGER PRIMARY KEY, seller INTEGER NOT NULL, item TEXT NOT NULL, price INTEGER NOT NULL,
                 created TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS listings_item ON listings(item, price);
+            CREATE TABLE IF NOT EXISTS story (
+                user_id INTEGER NOT NULL, stage TEXT NOT NULL, stars INTEGER NOT NULL DEFAULT 0,
+                best_ms INTEGER, paid INTEGER NOT NULL DEFAULT 0, done TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (user_id, stage));
             CREATE TABLE IF NOT EXISTS jackpot_rounds (
                 id INTEGER PRIMARY KEY, status TEXT NOT NULL DEFAULT 'open', created TEXT NOT NULL,
                 ends TEXT NOT NULL DEFAULT '', winner INTEGER, total INTEGER NOT NULL DEFAULT 0,
@@ -798,6 +805,82 @@ class Database:
             out.update({k: opened[0][k] for k in ("item", "new", "copies", "crate")})
         return out
 
+    # -- story mode
+
+    def story_stars(self, user_id: int | None) -> dict[str, int]:
+        """stage -> stars (bosses: 1 once beaten)."""
+        if user_id is None:
+            return {}
+        return dict(self.db.execute("SELECT stage, stars FROM story WHERE user_id = ?", (user_id,)).fetchall())
+
+    def story_view(self, user_id: int | None) -> dict:
+        """Story mode's chapters with this player's stars, bests and what's unlocked."""
+        rows = {} if user_id is None else {r["stage"]: r for r in self.db.execute(
+            "SELECT * FROM story WHERE user_id = ?", (user_id,)).fetchall()}
+        stars = {k: r["stars"] for k, r in rows.items()}
+        out = story.story_def()
+        total = 0
+        for ch in out["chapters"]:
+            for lv in ch["levels"]:
+                r = rows.get(lv["id"])
+                lv.update({"stars": r["stars"] if r else 0, "best_ms": r["best_ms"] if r else None,
+                           "unlocked": story.unlocked(lv["id"], stars)})
+                total += lv["stars"]
+            stage = f"boss-{ch['num']}"
+            ch["boss"].update({"beaten": stars.get(stage, 0) >= 1, "unlocked": story.unlocked(stage, stars),
+                               "wins": rows[stage]["paid"] if stage in rows else 0})
+        out.update({"stars": total, "max_stars": 3 * len(story.LEVEL_BY_ID),
+                    "bosses_beaten": sum(1 for k, v in stars.items() if k.startswith("boss-") and v >= 1)})
+        return out
+
+    def story_level_done(self, user_id: int, level, earned: list[bool], elapsed: float) -> dict:
+        """Record a finished level (best stars and time) and pay any stars not paid before.
+        Stars are paid once each: a later run that earns the same star again pays nothing."""
+        row = self.db.execute("SELECT * FROM story WHERE user_id = ? AND stage = ?", (user_id, level.id)).fetchone()
+        old_stars = row["stars"] if row else 0
+        stars = max(old_stars, sum(earned))
+        # (which stars have been paid: a bit each, so the second and third can come in any order)
+        paid = row["paid"] if row else 0
+        now_bits = sum(1 << k for k, got in enumerate(earned) if got)
+        new_bits = now_bits & ~paid
+        per_star = story.STAR_POINTS[level.chapter]
+        earned_points = per_star * bin(new_bits).count("1")
+        best = int(round(elapsed)) if not row or row["best_ms"] is None else min(row["best_ms"], int(round(elapsed)))
+        with self.db:
+            self.db.execute("INSERT INTO story (user_id, stage, stars, best_ms, paid, done) VALUES (?, ?, ?, ?, ?, ?) "
+                            "ON CONFLICT(user_id, stage) DO UPDATE SET stars = excluded.stars, best_ms = excluded.best_ms, "
+                            "paid = excluded.paid, done = excluded.done",
+                            (user_id, level.id, stars, best, paid | now_bits, now_iso()))
+        if earned_points:
+            self.add_points(user_id, earned_points, f"story: {level.id}")
+            self.add_xp(user_id, earned_points // 10)
+        return {"stars": stars, "earned": earned, "new_stars": bin(new_bits).count("1"), "points_earned": earned_points,
+                "best_ms": best, "new_best": not row or row["best_ms"] is None or best < row["best_ms"]}
+
+    def story_boss_won(self, user_id: int, boss) -> dict:
+        """Record beating a boss. The first win pays its rewards; later ones pay a little."""
+        stage = f"boss-{boss.num}"
+        row = self.db.execute("SELECT * FROM story WHERE user_id = ? AND stage = ?", (user_id, stage)).fetchone()
+        first = not row or row["stars"] < 1
+        with self.db:
+            self.db.execute("INSERT INTO story (user_id, stage, stars, paid, done) VALUES (?, ?, 1, 1, ?) "
+                            "ON CONFLICT(user_id, stage) DO UPDATE SET stars = 1, paid = paid + 1, done = excluded.done",
+                            (user_id, stage, now_iso()))
+        opened, points = [], 0
+        rewards = boss.rewards if first else (("points", story.REMATCH_POINTS[boss.num]),)
+        for kind, value in rewards:
+            if kind == "points":
+                points += value
+                self.add_points(user_id, value, f"story: beat {boss.name}")
+            elif kind == "crate":
+                opened.append({**self.open_crate(user_id, value, free=True), "crate": value})
+            else:
+                info = self.give_item(user_id, value)
+                opened.append({**info, "crate": ""})
+        self.add_xp(user_id, 2_000 if first else 200)
+        return {"first": first, "points_earned": points, "opened": opened, "points": self.points(user_id),
+                "rewards": story.reward_names(rewards)}
+
     # -- the jackpot
 
     def jackpot_round(self, now: datetime | None = None) -> sqlite3.Row:
@@ -1252,6 +1335,7 @@ class Room:
         self.name = f"{host.name}'s match"
         self.public = False  # public matches show up in everyone's match search
         self.ranked = True   # ranked matches against other people change rank points
+        self.battle: Battle | None = None  # the "battle" format's boards, while one's on
 
     def info(self) -> dict:
         return {"t": "room", "code": self.code, "host": self.host.id, "state": self.state,
@@ -1263,12 +1347,30 @@ class Room:
     def humans(self) -> list[Player]:
         return [p for p in self.players if p.human]
 
+    @property
+    def is_battle(self) -> bool:
+        return self.settings.get("format") == "battle"
+
+    @property
+    def capacity(self) -> int:
+        return MAX_BATTLE if self.is_battle else 2 * MAX_TEAM
+
+    def board(self, p: Player) -> Game | None:
+        """The board a player steers, while the match is on."""
+        if self.state != "playing":
+            return None
+        if self.battle:
+            return self.battle.sides[p.snake].game if 0 <= p.snake < len(self.battle.sides) else None
+        return self.game
+
     def add_bot(self, team, level) -> str | None:
         if self.state != "lobby":
             return "Bots can only join in the lobby."
         if team not in (0, 1) or level not in LEVELS:
             return "Unknown team or bot level."
-        if sum(1 for q in self.players if q.team == team) >= MAX_TEAM:
+        if len(self.players) >= self.capacity:
+            return f"The match is full ({self.capacity} players)."
+        if not self.is_battle and sum(1 for q in self.players if q.team == team) >= MAX_TEAM:
             return f"That team is full ({MAX_TEAM} players)."
         taken = {q.name for q in self.players}
         name = next((f"{n} (bot)" for n in random.sample(BOT_NAMES, len(BOT_NAMES)) if f"{n} (bot)" not in taken),
@@ -1299,14 +1401,14 @@ class Room:
 
     @property
     def open(self) -> bool:
-        return self.state == "lobby" and len(self.players) < 2 * MAX_TEAM
+        return self.state == "lobby" and len(self.players) < self.capacity
 
     def listing(self) -> dict:
         """What the public match search shows about this match."""
         s = self.settings
         return {"code": self.code, "name": self.name, "host": self.host.name, "players": len(self.players),
-                "max": 2 * MAX_TEAM, "size": s["size"], "speed": s["speed"], "goal": s["goal"],
-                "modes": s["modes"], "ranked": self.ranked}
+                "max": self.capacity, "size": s["size"], "speed": s["speed"], "goal": s["goal"],
+                "modes": s["modes"], "ranked": self.ranked and not self.is_battle, "format": s.get("format", "classic")}
 
     async def broadcast(self, msg: dict) -> None:
         text = json.dumps(msg, separators=(",", ":"))
@@ -1327,7 +1429,9 @@ class Room:
         if p in self.players:
             self.players.remove(p)
         p.room = None
-        if self.game and 0 <= p.snake < len(self.game.snakes):
+        if self.battle and 0 <= p.snake < len(self.battle.sides):
+            self.battle.forfeit(p.snake)
+        elif self.game and 0 <= p.snake < len(self.game.snakes):
             self.game.snakes[p.snake].dead = True  # leaving mid-match knocks your snake out
         if self.host is p and self.humans:
             self.host = self.humans[0]
@@ -1354,14 +1458,27 @@ class Room:
             pass
         if isinstance(new.get("modes"), list):
             s["modes"] = [m for m in VERSUS_MODES if m in new["modes"]]
+        if new.get("format") in ("classic", "battle") and (new["format"] != "battle" or len(self.players) <= MAX_BATTLE):
+            s["format"] = new["format"]
 
     def start(self) -> str | None:
         if self.state not in ("lobby", "over"):
             return "The match has already started."
+        self.scheduled = []
+        if self.is_battle:
+            if not 2 <= len(self.players) <= MAX_BATTLE:
+                return f"A battle needs 2 to {MAX_BATTLE} players (add bots to fill it up)."
+            w, h = VERSUS_SIZES[self.settings["size"]]
+            self.game = None
+            self.battle = Battle(len(self.players), w, h, self.settings["modes"], self.settings["apples"],
+                                 speed_ms(self.settings["speed"]), names=[p.name for p in self.players])
+            for i, p in enumerate(self.players):
+                p.snake = i
+            self.task = asyncio.create_task(self.run_battle())
+            return None
         teams = [sum(1 for p in self.players if p.team == t) for t in (0, 1)]
         if not all(teams):
             return "Both teams need at least one player."
-        self.scheduled = []
         order = sorted(self.players, key=lambda p: p.team)
         w, h = VERSUS_SIZES[self.settings["size"]]
         self.game = Game(w, h, self.settings["modes"], self.settings["apples"],
@@ -1407,8 +1524,67 @@ class Room:
         await self.reward(g)
         await self.broadcast(self.info())
 
+    time_scale = 1.0  # (tests run battles faster)
+
+    async def run_battle(self) -> None:
+        """The "battle" format: everyone on their own board, last snake going wins."""
+        b = self.battle
+        self.state = "countdown"
+        await self.broadcast(self.info())
+        players = [{"name": p.name, "avatar": p.avatar, "bot": p.bot} for p in self.players]
+        for p in self.players:
+            await self.send(p, {"t": "duel_start", "mode": "battle", "you": p.snake, "players": players,
+                                "tick_ms": b.base_tick_ms, "state": b.state()})
+        for n in (3, 2, 1):
+            await self.broadcast({"t": "duel_countdown", "n": n})
+            await asyncio.sleep(1 * self.time_scale)
+        b.start()
+        self.state = "playing"
+        await self.broadcast({"t": "duel_countdown", "n": 0})
+        loop = asyncio.get_running_loop()
+        deadline = loop.time()
+        while not b.over and self.humans:
+            self.apply_scheduled()
+            for p in self.players:
+                if p.bot:
+                    b.steer_bot(p.snake, p.bot, BOT_SLOPPY.get(p.bot, 0.0))
+            b.step()
+            state = b.state()
+            b.clear_events()
+            await self.broadcast({"t": "duel_state", "s": state})
+            deadline += b.base_tick_ms / 1000 * self.time_scale
+            await asyncio.sleep(max(0.0, deadline - loop.time()))
+        self.state = "over"
+        winner = self.players[b.winner].name if b.winner is not None and b.winner < len(self.players) else None
+        for p in list(self.players):
+            if p.bot or not (0 <= p.snake < len(b.sides)):
+                continue
+            won = b.winner == p.snake
+            side = b.sides[p.snake]
+            out = {"t": "duel_over", "mode": "battle", "won": won, "place": b.place(p.snake), "of": len(b.sides),
+                   "winner": winner, "seconds": round(b.tick / b.per_second, 1), "best_chain": side.best_chain,
+                   "sent": side.sent}
+            if p.user_id is not None:
+                db = self.server.db
+                points = cos.MATCH_PLAYED + cos.MATCH_PER_FRUIT * side.game.score + (cos.MATCH_WIN if won else 0)
+                info = db.record_match(p.user_id, "win" if won else "loss", False, points)
+                db.add_xp(p.user_id, points)
+                db.progress(p.user_id, "matches")
+                if won and (len(self.humans) >= 2 or any(q.bot and q.bot != "easy" for q in self.players)):
+                    db.progress(p.user_id, "wins")
+                out.update({"points_earned": info["points"], "balance": info["balance"]})
+            await self.send(p, out)
+        await self.broadcast(self.info())
+
     def apply_scheduled(self) -> None:
         """Hand the game the players' turns that were sent ahead for the move it's about to make."""
+        if self.battle:
+            due = sorted(x for x in self.scheduled if x[0] <= self.battle.tick + 1)
+            self.scheduled = [x for x in self.scheduled if x[0] > self.battle.tick + 1]
+            for _step, snake, d in due:
+                if 0 <= snake < len(self.battle.sides):
+                    self.battle.sides[snake].game.input_for(0, d)
+            return
         g = self.game
         due = sorted(x for x in self.scheduled if x[0] <= g.tick + 1)
         self.scheduled = [x for x in self.scheduled if x[0] > g.tick + 1]
@@ -1441,6 +1617,91 @@ class Room:
 
 
 # ---- the server ---------------------------------------------------------------------
+
+class DuelRoom:
+    """A story-mode boss duel: one player against a boss, each on their own board (duel.py).
+    It answers to what the input handler expects of a Room (game, state, scheduled)."""
+
+    time_scale = 1.0  # (tests run duels faster)
+
+    def __init__(self, server: "Server", player: Player, boss):
+        self.server, self.boss = server, boss
+        self.code = f"duel-{player.id}"
+        self.players = [player]
+        player.room, player.snake = self, 0
+        self.duel = Duel(boss)
+        self.state = "countdown"
+        self.scheduled: list[tuple[int, int, str]] = []
+        self.task: asyncio.Task | None = None
+
+    @property
+    def game(self) -> Game:
+        return self.duel.you
+
+    @property
+    def humans(self) -> list[Player]:
+        return list(self.players)
+
+    def board(self, p: Player) -> Game | None:
+        return self.duel.you if self.state == "playing" else None
+
+    def remove(self, p: Player) -> None:
+        if p in self.players:
+            self.players.remove(p)
+        p.room = None
+        self.duel.forfeit()  # (leaving a duel gives it up)
+
+    async def send(self, msg: dict) -> None:
+        for p in list(self.players):
+            if p.ws is not None and not p.ws.closed:
+                try:
+                    await p.ws.send_str(json.dumps(msg, separators=(",", ":")))
+                except (ConnectionError, RuntimeError):
+                    pass
+
+    async def broadcast(self, msg: dict) -> None:
+        await self.send(msg)
+
+    def apply_scheduled(self) -> None:
+        g = self.game
+        due = sorted(x for x in self.scheduled if x[0] <= g.tick + 1)
+        self.scheduled = [x for x in self.scheduled if x[0] > g.tick + 1]
+        for _step, snake, d in due:
+            g.input_for(snake, d)
+
+    async def run(self) -> None:
+        d, boss = self.duel, self.boss
+        player = self.players[0]
+        await self.send({"t": "duel_start", "boss": boss.num, "tick_ms": boss.tick_ms, "state": d.state()})
+        for n in (3, 2, 1):
+            await self.send({"t": "duel_countdown", "n": n})
+            await asyncio.sleep(1 * self.time_scale)
+        d.start()
+        self.state = "playing"
+        await self.send({"t": "duel_countdown", "n": 0})
+        loop = asyncio.get_running_loop()
+        deadline = loop.time()
+        while not d.over and self.players:
+            self.apply_scheduled()
+            d.step()
+            state = d.state()
+            d.clear_events()
+            await self.send({"t": "duel_state", "s": state})
+            deadline += boss.tick_ms / 1000 * d.speed() * self.time_scale
+            await asyncio.sleep(max(0.0, deadline - loop.time()))
+        self.state = "over"
+        if not self.players or player.user_id is None:
+            return  # (given up: nothing to pay)
+        won = d.winner == YOU
+        you, them = d.sides[YOU], d.sides[BOSS]
+        out = {"t": "duel_over", "boss": boss.num, "won": won, "seconds": round(d.tick / d.per_second, 1),
+               "best_chain": you.best_chain, "sent": you.sent, "boss_sent": them.sent}
+        if won:
+            out.update(self.server.db.story_boss_won(player.user_id, boss))
+        await self.send(out)
+        self.players.clear()
+        player.room = None
+
 
 class Server:
     def __init__(self, data_dir: Path, clients_dir: Path | None = None, default_client: str | None = None):
@@ -1545,6 +1806,8 @@ class Server:
         r.add_post("/api/trades/answer", self.answer_trade)
         r.add_get("/api/users/{name}/items", self.user_items)
         r.add_get("/api/replay/{category}", self.replay_run)
+        r.add_get("/api/story", self.story)
+        r.add_post("/api/story/run", self.story_run)
         r.add_get("/api/jackpot", self.jackpot)
         r.add_post("/api/jackpot/enter", self.jackpot_enter)
         r.add_post("/api/daily/claim", self.claim_daily)
@@ -1857,6 +2120,32 @@ class Server:
         other = t["sender"] if t["recipient"] == user["id"] else t["recipient"]
         await self.notify(other, {"t": "trade", "from": user["name"], "id": t["id"], "status": t["status"]})
         return web.json_response({**self.db.trade_view(t), "points": self.db.points(user["id"])})
+
+    # -- story mode
+    async def story(self, request: web.Request) -> web.Response:
+        user = self.db.user_for(self.token(request))
+        return web.json_response(self.db.story_view(user["id"] if user else None))
+
+    async def story_run(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in to earn stars and rewards.")
+        run = await self.body(request)
+        stage = str(run.get("category", ""))[len(story.STORY_PREFIX):]
+        if stage not in story.LEVEL_BY_ID:
+            return self.error("Unknown level.")
+        if not story.unlocked(stage, self.db.story_stars(user["id"])):
+            return self.error("That level isn't unlocked yet.")
+        try:
+            level, result = await asyncio.get_running_loop().run_in_executor(None, story.replay_level, run)
+        except (KeyError, TypeError, ValueError) as e:
+            return web.json_response({"valid": False, "message": f"The server couldn't check that run: {e}"})
+        if not result.finished:
+            return web.json_response({"valid": False, "message": "The replay doesn't finish the level."})
+        out = self.db.story_level_done(user["id"], level, story.stars_for(level, result), result.elapsed)
+        stars = self.db.story_stars(user["id"])
+        order = story.stage_ids()
+        nxt = order[order.index(stage) + 1] if order.index(stage) + 1 < len(order) else None
+        return web.json_response({"valid": True, **out, "next": nxt, "next_unlocked": bool(nxt and story.unlocked(nxt, stars)),
+                                  "points": self.db.points(user["id"])})
 
     # -- the jackpot
     async def jackpot(self, request: web.Request) -> web.Response:
@@ -2198,20 +2487,41 @@ class Server:
         if t == "ping":  # lets players see their round-trip time
             await p.ws.send_str(json.dumps({"t": "pong", "at": m.get("at")}))
             return
-        if t == "input" and room and room.game and room.state == "playing":
-            g, d = room.game, m.get("d")
+        board = room.board(p) if room and t == "input" else None
+        if t == "input" and board is not None:
+            g, d = board, m.get("d")
+            own = 0 if g is not room.game else p.snake  # (in a battle or duel, your board has just you)
             if d in DIRS and p.snake >= 0:
                 # "step": the move the player's game aimed this turn at (allowing for their
                 # ping). Hold it until then; if it's late anyway, apply it there when fair.
                 step = m.get("step")
                 if not isinstance(step, int) or step == g.tick + 1:
-                    g.input_for(p.snake, d)
+                    g.input_for(own, d)
                 elif step > g.tick + 1:
                     if step <= g.tick + 4 and len(room.scheduled) < 40:  # (no far-future or flood)
                         room.scheduled.append((step, p.snake, d))
-                elif not (g.tick - step + 1 <= MAX_LATE_MOVES and g.retro_turn(p.snake, d, g.tick - step + 1)):
-                    g.input_for(p.snake, d)
+                elif not (g.tick - step + 1 <= MAX_LATE_MOVES and g.retro_turn(own, d, g.tick - step + 1)):
+                    g.input_for(own, d)
             return
+        if t == "input":
+            return
+        if t == "duel":  # story mode: fight a boss
+            await self.leave(p)
+            boss = story.BOSS_BY_NUM.get(m.get("boss")) if isinstance(m.get("boss"), int) else None
+            if p.user_id is None:
+                err = "Log in to fight the bosses."
+            elif not boss:
+                err = "No such boss."
+            elif not story.unlocked(f"boss-{boss.num}", self.db.story_stars(p.user_id)):
+                err = "Finish this chapter's ten levels first."
+            else:
+                duel = DuelRoom(self, p, boss)
+                duel.task = asyncio.create_task(duel.run())
+                return
+            await p.ws.send_str(json.dumps({"t": "error", "msg": err}))
+            return
+        if isinstance(room, DuelRoom) and t not in ("leave", "host", "join"):
+            return  # (nothing else to do in a duel)
         if t == "host":
             await self.leave(p)
             room = Room(self, self.new_code(), p)
@@ -2229,7 +2539,7 @@ class Server:
                 err = "No match with that code."
             elif room.state != "lobby":
                 err = "That match has already started."
-            elif len(room.players) >= 2 * MAX_TEAM:
+            elif len(room.players) >= room.capacity:
                 err = "That match is full."
             else:
                 room.add(p)
@@ -2272,6 +2582,7 @@ class Server:
             if p is room.host and room.state == "over":
                 room.state = "lobby"
                 room.game = None
+                room.battle = None
         if err:
             await p.ws.send_str(json.dumps({"t": "error", "msg": err}))
         if room and room.code in self.rooms:

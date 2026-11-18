@@ -16,14 +16,14 @@ from opensnake.speedrun import CATEGORY_BY_ID, make_custom  # noqa: E402
 
 class CatalogueTests(ServerTestCase):
     def test_skins_with_the_rarest_only_in_loot_boxes(self):
-        self.assertEqual(len(cos.SKINS), 138)
-        self.assertEqual(len({s.id for s in cos.SKINS}), 138)
+        self.assertEqual(len(cos.SKINS), 147)
+        self.assertEqual(len({s.id for s in cos.SKINS}), 147)
         stands = [s for s in cos.SKINS if s.series == "Stand"]
         self.assertEqual(len(stands), 34)
         self.assertTrue(all(not s.shop for s in stands))
         for s in cos.SKINS:
             self.assertIn(s.rarity, cos.RARITIES)
-            if s.rarity in ("epic", "legendary", "mythic") or s.series in ("Pass", "Ranked", "Holiday", "Gift"):
+            if s.rarity in ("epic", "legendary", "mythic") or s.series in ("Pass", "Ranked", "Holiday", "Gift", "Story"):
                 self.assertFalse(s.shop, s.id)
             else:
                 self.assertTrue(s.shop, s.id)
