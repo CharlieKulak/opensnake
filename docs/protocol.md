@@ -89,6 +89,11 @@ catalogue's `story` has every level, challenge and boss). A level is played like
 | `GET /api/story` | | the chapters, with your `stars`, `best_ms` and `unlocked` on each level, and `beaten`/`unlocked` on each boss (no account: nothing unlocked past the first level) |
 | `POST /api/story/run` | a run file | `{valid, stars, earned: [3 booleans], new_stars, points_earned, best_ms, next, next_unlocked, points}`. Each star pays once (more per star in later chapters) |
 
+| `POST /api/story/duel/start` | `{boss}` | `{token, seed, boss}`: play that boss's duel on your own computer, from this seed (`opensnake/duel.py`'s `Duel`; Crustacean's `src/duel.rs` and `src/bots.rs` show it in another language) |
+| `POST /api/story/duel/finish` | `{token, inputs}` | `{won, seconds, best_chain, sent, ...}`: the server replays the duel from your turns (`[move, direction]`, as you pressed them) and pays a win (`first`, `rewards`, `opened`), if it took at least as long as it would to play |
+| `GET /api/presence` | | `{check}`: after 2.5 hours of play, "Are you still here?" (`{code, choices, seconds}`; games ask now and then while playing, and when pushed `presence`). Showing it starts its 20 seconds |
+| `POST /api/presence` | `{answer}` | `{ok}`: the right code clears it. No answer in time takes back the last 6 hours of earnings, and the server sends `kicked` (`message`) and closes the connection |
+
 Levels unlock in order; a boss needs its chapter's ten levels, and the next chapter needs the
 boss beaten. Star 1 is finishing; stars 2 and 3 are the level's challenges (`time`: finish in
 `a` ms; `turns`: at most `a` turns; `split`: the first `a` fruit in `b` ms; `noshield`: no
@@ -143,7 +148,8 @@ messages are the duel ones below, with `duel_start` also carrying `mode: "battle
 (your board) and `players`; attack events say who they went to; `out` events say who crashed;
 `duel_over` has `place`, `of`, `winner`, `points_earned` and `balance`.
 
-**Boss duels (story mode).** Send `{"t": "duel", "boss": n}` (logged in, the boss
+**Boss duels (story mode)** are played on the player's own computer (see `/api/story/duel/*`
+above). The server can also run one: send `{"t": "duel", "boss": n}` (logged in, the boss
 unlocked). You and the boss each get a board. The server sends `duel_start` (`boss`,
 `tick_ms`, `state`), `duel_countdown` (`n`, then 0), a `duel_state` every move (`s`:
 `{tick, tick_ms, over, winner, sides: [yours, the boss's], events, next_signature, sudden}`)
