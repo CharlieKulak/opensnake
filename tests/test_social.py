@@ -1,5 +1,7 @@
 """Snake points, the store, profiles, friends, bots, ranks and community categories (server side)."""
 
+import asyncio
+import json
 import random
 import sys
 from collections import Counter
@@ -1097,3 +1099,38 @@ class GiftSkinTests(ServerTestCase):
         self.assertIn("can't go in the jackpot", r["error"])
         self.assertEqual(db.copies(1, "skin:gambledtoomuch"), 1)
         self.assertEqual((await self.post("/api/profile", {"skin": "gambledtoomuch"}, a))[0], 200)
+
+
+class SalaryTests(ServerTestCase):
+    async def test_paid_every_two_days_and_not_on_the_leaderboard(self):
+        await self.account("alice")
+        db = self.server.db
+        start = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+        self.assertIn("every 2 days", db.set_salary("alice", 500_000, 2, start))
+        self.assertEqual(db.pay_salaries(start), [(1, 500_000)])
+        self.assertEqual(db.pay_salaries(start + timedelta(days=1)), [])  # (not yet)
+        self.assertEqual(db.pay_salaries(start + timedelta(days=2, minutes=5)), [(1, 500_000)])
+        self.assertEqual(db.points(1), 1_000_000)
+        self.assertFalse(any(p["name"] == "alice" for p in db.rankings()))  # (a salary isn't earned)
+        self.assertIn("stopped", db.set_salary("alice", 0, 2))
+        self.assertEqual(db.pay_salaries(start + timedelta(days=10)), [])
+        with self.assertRaises(LookupError):
+            db.set_salary("nobody", 5, 1)
+
+
+class SkinsInMatchesTests(ServerTestCase):
+    async def test_everyone_sees_each_others_skins(self):
+        a = await self.account("alice")
+        db = self.server.db
+        db.grant(1, "skin:galaxy")
+        db.set_profile(1, {"skin": "galaxy"})
+        ws = await self.client.ws_connect(f"/ws?token={a}")
+        await ws.send_json({"t": "host", "settings": {"size": "small", "speed": 1.0}, "bots": [{"team": 1, "level": "easy"}]})
+        await ws.send_json({"t": "start"})
+        for _ in range(200):
+            m = json.loads((await asyncio.wait_for(ws.receive(), 10)).data)
+            if m["t"] == "start":
+                break
+        self.assertEqual(m["skins"][m["you"]], "galaxy")
+        self.assertEqual(m["skins"][1 - m["you"]], "")  # (the bot)
+        await ws.close()

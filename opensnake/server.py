@@ -203,6 +203,9 @@ class Database:
                 id INTEGER PRIMARY KEY, seller INTEGER NOT NULL, item TEXT NOT NULL, price INTEGER NOT NULL,
                 created TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS listings_item ON listings(item, price);
+            CREATE TABLE IF NOT EXISTS salaries (
+                user_id INTEGER PRIMARY KEY, amount INTEGER NOT NULL, every_days REAL NOT NULL,
+                next_pay TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS story (
                 user_id INTEGER NOT NULL, stage TEXT NOT NULL, stars INTEGER NOT NULL DEFAULT 0,
                 best_ms INTEGER, paid INTEGER NOT NULL DEFAULT 0, done TEXT NOT NULL DEFAULT '',
@@ -820,6 +823,43 @@ class Database:
             out.update({k: opened[0][k] for k in ("item", "new", "copies", "crate")})
         return out
 
+    # -- salaries: points paid to a player every few days by the site's owner
+
+    def set_salary(self, name: str, amount: int, every_days: float, now: datetime | None = None) -> str:
+        """Pay a player `amount` snake points every `every_days` days, starting now (0 stops it).
+        Salaries aren't earnings: they don't count on the leaderboard."""
+        row = self.user_row(name)
+        if not row:
+            raise LookupError(f"No player called {name}.")
+        if amount <= 0:
+            self.db.execute("DELETE FROM salaries WHERE user_id = ?", (row["id"],))
+            self.db.commit()
+            return f"{row['name']}'s salary stopped."
+        now = now or datetime.now(timezone.utc)
+        self.db.execute("INSERT INTO salaries (user_id, amount, every_days, next_pay) VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(user_id) DO UPDATE SET amount = excluded.amount, every_days = excluded.every_days",
+                        (row["id"], int(amount), float(every_days), now.strftime("%Y-%m-%dT%H:%M:%SZ")))
+        self.db.commit()
+        return f"{row['name']} is paid {int(amount):,} snake points every {every_days:g} days."
+
+    def pay_salaries(self, now: datetime | None = None) -> list[tuple[int, int]]:
+        """Pay every salary that's due (each pay day once, even after the server was down)."""
+        now = now or datetime.now(timezone.utc)
+        paid = []
+        for r in self.db.execute("SELECT * FROM salaries").fetchall():
+            due = _parse_iso(r["next_pay"])
+            if due > now:
+                continue
+            self.add_points(r["user_id"], r["amount"], "salary")
+            nxt = due + timedelta(days=r["every_days"])
+            if nxt <= now:  # (down for longer than a pay period: no back pay, the next is a period from now)
+                nxt = now + timedelta(days=r["every_days"])
+            self.db.execute("UPDATE salaries SET next_pay = ? WHERE user_id = ?",
+                            (nxt.strftime("%Y-%m-%dT%H:%M:%SZ"), r["user_id"]))
+            self.db.commit()
+            paid.append((r["user_id"], r["amount"]))
+        return paid
+
     # -- story mode
 
     def story_stars(self, user_id: int | None) -> dict[str, int]:
@@ -1212,6 +1252,7 @@ class Database:
         # (selling on the market only moves points between players, so it isn't earning)
         earned = dict(self.db.execute("SELECT user_id, SUM(amount) FROM ledger WHERE amount > 0 "
                                       "AND reason NOT LIKE 'duplicate%' AND reason NOT LIKE 'market:%' AND reason NOT LIKE 'trade:%' "
+                                      "AND reason NOT LIKE 'salary%' "
                                       "GROUP BY user_id").fetchall())
         # (skins don't count towards the score; the count is still sent for games from before 2.6)
         skins = dict(self.db.execute("SELECT user_id, COUNT(*) FROM inventory WHERE item LIKE 'skin:%' "
@@ -1510,8 +1551,12 @@ class Room:
         tick = speed_ms(self.settings["speed"]) / 1000
         self.state = "countdown"
         await self.broadcast(self.info())
+        skins = [""] * len(g.snakes)
         for p in self.players:
-            await self.send(p, {"t": "start", "you": p.snake, "tick_ms": tick * 1000,
+            if 0 <= p.snake < len(skins):
+                skins[p.snake] = self.server.equipped_skin(p)
+        for p in self.players:
+            await self.send(p, {"t": "start", "you": p.snake, "tick_ms": tick * 1000, "skins": skins,
                                 "state": game_to_state(g)})
         for n in (3, 2, 1):
             await self.broadcast({"t": "countdown", "n": n})
@@ -1547,7 +1592,8 @@ class Room:
         b = self.battle
         self.state = "countdown"
         await self.broadcast(self.info())
-        players = [{"name": p.name, "avatar": p.avatar, "bot": p.bot} for p in self.players]
+        players = [{"name": p.name, "avatar": p.avatar, "bot": p.bot, "skin": self.server.equipped_skin(p)}
+                   for p in self.players]
         for p in self.players:
             await self.send(p, {"t": "duel_start", "mode": "battle", "you": p.snake, "players": players,
                                 "tick_ms": b.base_tick_ms, "state": b.state()})
@@ -1882,7 +1928,9 @@ class Server:
         async def settle_hourly():
             while True:
                 self.db.settle_wr_holds()
-                await asyncio.sleep(3600)
+                for uid, amount in self.db.pay_salaries():
+                    print(f"opensnake: paid user {uid} a salary of {amount:,}", flush=True)
+                await asyncio.sleep(600)  # (every 10 minutes: holds settle by the hour themselves)
         self.settle_task = asyncio.create_task(settle_hourly())
 
         async def draw_jackpots():
@@ -2362,6 +2410,7 @@ class Server:
         since = (datetime.now(timezone.utc) - timedelta(hours=PENALTY_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
         earned = db.db.execute("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE user_id = ? AND amount > 0 AND created >= ? "
                                "AND reason NOT LIKE 'trade:%' AND reason NOT LIKE 'market:%' AND reason NOT LIKE 'jackpot%' "
+                               "AND reason NOT LIKE 'salary%' "
                                "AND reason NOT LIKE 'test%'", (uid, since)).fetchone()[0]
         xp = db.db.execute("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE user_id = ? AND amount > 0 AND created >= ? "
                            "AND (reason = 'round' OR reason LIKE 'versus %' OR reason LIKE 'story:%')", (uid, since)).fetchone()[0]
@@ -2438,6 +2487,13 @@ class Server:
         else:
             await self.note_play(uid)
         return web.json_response(out)
+
+    def equipped_skin(self, p: "Player") -> str:
+        """The skin a player has on ("" for none, or a bot), so everyone sees it in matches."""
+        if p.user_id is None:
+            return ""
+        row = self.db.user_by_id(p.user_id)
+        return (row["skin"] or "") if row else ""
 
     # -- one account earning per network
 
@@ -2880,7 +2936,20 @@ def main(argv=None) -> None:
     parser.add_argument("--default-client", help="the client served at / (default: crustacean, if there)")
     parser.add_argument("--restart-week", action="store_true",
                         help="start this week over (new weekly speedruns, a fresh battle pass), then exit")
+    parser.add_argument("--salary", nargs=3, metavar=("PLAYER", "POINTS", "DAYS"),
+                        help="pay PLAYER POINTS snake points every DAYS days, starting now (POINTS 0 stops it); "
+                             "salaries don't count on the leaderboard. Then exit")
     args = parser.parse_args(argv)
+    if args.salary:
+        db = Database(args.data / "opensnake.db")
+        name, points, days = args.salary
+        try:
+            print(db.set_salary(name, int(points), float(days)))
+        except (LookupError, ValueError) as e:
+            parser.error(str(e))
+        finally:
+            db.close()
+        return
     if args.restart_week:
         db = Database(args.data / "opensnake.db")
         print(f"This week is now {db.restart_week()}: new weekly speedruns and a fresh battle pass until Monday.")

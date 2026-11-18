@@ -161,6 +161,9 @@ versus (`step` is your board's move). Fruit eaten within a few moves of each oth
 combo; when it ends it sends junk (1, 2, 4, 6, 9, 12, 16, then 4 more a fruit), cancelling
 junk coming your way first. `leave` gives the duel up.
 
+`start` (and a battle's `duel_start` players) include each player's equipped skin (`skins`,
+or `skin`; `""` for none), so a client can draw everyone in theirs.
+
 **From the server:** `room` (the lobby: players, teams, settings, `host`,
 `code`, `ranked`, `public`), `start` (`state`, `you`: your snake's index,
 `tick_ms`), `countdown` (`n`, then 0 to go), `state` (`s`: the game, every
