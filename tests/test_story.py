@@ -1,6 +1,7 @@
 """Story mode: the levels, their stars, the boss duels and what they pay."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import random
 import sys
@@ -329,3 +330,111 @@ class OnlineBattleTests(StoryServerTests.__mro__[1]):
         self.assertEqual(over["won"], over["place"] == 1)
         self.assertGreater(over["points_earned"], 0)
         await ws.close()
+
+
+def play_duel_offline(boss, seed):
+    """Play a duel the way a game does on its own: (turns pressed, who won)."""
+    d = duel.Duel(boss, seed)
+    d.start()
+    rng, inputs = random.Random(seed), []
+    while not d.over and d.tick < 20_000:
+        g = d.you
+        if not g.over:
+            m = bots.choose(g, 0, rng, "hard")
+            if m:
+                inputs.append([d.tick, m])
+                g.input_for(0, m)
+        d.step()
+        d.clear_events()
+    return inputs, d.winner
+
+
+class OfflineDuelTests(StoryServerTests.__mro__[1]):
+    async def test_a_duel_played_offline_is_checked_and_paid(self):
+        token = await self.account("alice")
+        db = self.server.db
+        self.assertIn("ten levels", (await self.post("/api/story/duel/start", {"boss": 1}, token))[1]["error"])
+        for i in range(1, 11):
+            db.story_level_done(1, story.LEVEL_BY_ID[f"s1-{i:02d}"], [True, False, False], 9000)
+        for _ in range(15):
+            st = (await self.post("/api/story/duel/start", {"boss": 1}, token))[1]
+            inputs, winner = play_duel_offline(story.BOSSES[0], st["seed"])
+            if winner == duel.YOU:
+                break
+            res = (await self.post("/api/story/duel/finish", {"token": st["token"], "inputs": inputs}, token))[1]
+            self.assertFalse(res["won"])
+        else:
+            self.fail("the bot never beat the first boss")
+        # sent straight back: faster than it could have been played
+        res = (await self.post("/api/story/duel/finish", {"token": st["token"], "inputs": inputs}, token))[1]
+        self.assertIn("faster than it could be played", res["message"])
+        st = (await self.post("/api/story/duel/start", {"boss": 1}, token))[1]
+        inputs, winner = play_duel_offline(story.BOSSES[0], st["seed"])
+        t = self.server.duel_starts[st["token"]]
+        self.server.duel_starts[st["token"]] = (*t[:3], t[3] - 600)  # (as if it took ten minutes)
+        res = (await self.post("/api/story/duel/finish", {"token": st["token"], "inputs": inputs}, token))[1]
+        self.assertEqual(res["won"], winner == duel.YOU)
+        if res["won"]:
+            self.assertTrue(res["first"])
+            self.assertEqual(db.copies(1, story.BOSSES[0].skin), 1)
+        # a token is good once, and only for its player
+        self.assertIn("wasn't started", (await self.post("/api/story/duel/finish", {"token": st["token"], "inputs": inputs}, token))[1]["error"])
+
+
+class PresenceTests(StoryServerTests.__mro__[1]):
+    def long_session(self, uid, hours=2.6):
+        now = asyncio.get_running_loop().time()
+        self.server.sessions[uid] = {"start": now - hours * 3600, "last": now - 60, "check": None}
+
+    async def test_still_here_after_two_and_a_half_hours(self):
+        from test_social import played_round
+        token = await self.account("alice")
+        self.long_session(1)
+        res = (await self.post("/api/rounds", {"round": played_round(1, 5)[0]}, token))[1]
+        self.assertEqual(res["earned"], 0)
+        self.assertIn("Are you still here", res["message"])
+        check = (await self.get("/api/presence", token))[1]["check"]
+        self.assertEqual(len(check["choices"]), 4)
+        self.assertIn(check["code"], check["choices"])
+        self.assertGreater(check["seconds"], 15)
+        wrong = next(c for c in check["choices"] if c != check["code"])
+        self.assertFalse((await self.post("/api/presence", {"answer": wrong}, token))[1]["ok"])
+        self.assertTrue((await self.post("/api/presence", {"answer": check["code"]}, token))[1]["ok"])
+        self.assertIsNone((await self.get("/api/presence", token))[1]["check"])
+        self.assertGreater((await self.post("/api/rounds", {"round": played_round(2, 5)[0]}, token))[1]["earned"], 0)
+
+    async def test_no_answer_takes_back_six_hours(self):
+        await self.account("alice")
+        db = self.server.db
+        db.add_points(1, 5_000, "round")
+        db.add_points(1, 2_000, "market: sold skin:mint")  # (sales between players stay)
+        old = (datetime.now(timezone.utc) - timedelta(hours=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        db.db.execute("INSERT INTO ledger (user_id, amount, reason, created) VALUES (1, 0, 'round', ?)", (old,))
+        db.db.execute("UPDATE users SET points = points + 3000 WHERE id = 1")  # (earned 7 hours ago: stays)
+        db.db.commit()
+        self.long_session(1)
+        await self.server.note_play(1)
+        now = asyncio.get_running_loop().time()
+        self.server.sessions[1]["check"]["shown"] = now - 30  # (shown 30 s ago, never answered)
+        await self.server.sweep_presence()
+        self.assertEqual(db.points(1), 5_000)
+        self.assertIsNone(self.server.sessions[1]["check"])
+
+    async def test_playing_on_without_ever_showing_it(self):
+        await self.account("alice")
+        db = self.server.db
+        db.add_points(1, 4_000, "versus win")
+        self.long_session(1)
+        await self.server.note_play(1)
+        self.server.sessions[1]["check"]["created"] -= 200  # (asked 200 s ago; the game never showed it)
+        msg = await self.server.note_play(1)
+        self.assertIn("taken back", msg)
+        self.assertEqual(db.points(1), 0)
+
+    async def test_a_break_clears_it(self):
+        await self.account("alice")
+        self.long_session(1)
+        await self.server.note_play(1)
+        self.server.sessions[1]["last"] -= 20 * 60
+        self.assertIsNone(await self.server.note_play(1))
+        self.assertIsNone(self.server.sessions[1]["check"])

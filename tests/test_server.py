@@ -72,6 +72,15 @@ class WebClientTests(ServerTestCase):
         await client.start_server()
         return client
 
+    async def test_retired_clients_send_you_to_the_main_game(self):
+        client = await self.start(names=("crustacean",))
+        try:
+            for old in ("/py", "/py/", "/rs", "/rs/"):
+                r = await client.get(old, allow_redirects=False)
+                self.assertEqual((r.status, r.headers["Location"]), (302, "/"), old)
+        finally:
+            await client.close()
+
     async def test_clients_are_served_with_the_default_at_the_root(self):
         client = await self.start()
         try:

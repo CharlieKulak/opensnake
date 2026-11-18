@@ -70,11 +70,11 @@ class Battle:
         root = random.Random(seed)
         self.sides = []
         for i in range(n):
-            g = Game(w, h, modes, apples, "apple", random.Random(root.random()))
+            g = Game(w, h, modes, apples, "apple", random.Random(root.getrandbits(32)))
             g.snakes[0].name = (names or [])[i] if i < len(names or []) else f"Player {i + 1}"
             self.sides.append(Side(g))
-        self.rng = random.Random(root.random())       # junk and attacks
-        self.bot_rng = random.Random(root.random())   # computer players' steering
+        self.rng = random.Random(root.getrandbits(32))       # junk and attacks
+        self.bot_rng = random.Random(root.getrandbits(32))   # computer players' steering
         self.base_tick_ms = tick_ms
         self.combo_window = combo_window
         self.tick = 0
@@ -399,6 +399,26 @@ class Duel(Battle):
             side.fog_until = self.tick + self.secs(FOG_SECONDS)
         elif kind == "overclock":
             side.overclock_until = self.tick + self.secs(OVERCLOCK_SECONDS)
+
+
+def replay_duel(boss: Boss, seed: int, inputs, max_ticks: int = 40_000) -> tuple["Duel", float]:
+    """Replay a boss duel played on a player's own computer from its seed and their turns
+    ([move, direction], as they pressed them): (the duel, the least real ms it could have taken)."""
+    d = Duel(boss, seed)
+    d.start()
+    turns = [(int(t), str(m)) for t, m in inputs]
+    if any(m not in DIRS for _t, m in turns) or len(turns) > 100_000:
+        raise ValueError("unknown moves")
+    i = 0
+    least = 0.0
+    while not d.over and d.tick < max_ticks:
+        while i < len(turns) and turns[i][0] <= d.tick:
+            d.you.input_for(0, turns[i][1])
+            i += 1
+        least += d.boss.tick_ms * d.speed()
+        d.step()
+        d.clear_events()
+    return d, least
 
 
 def simulate(boss: Boss, seed: int, you_level: str = "hard", max_ticks: int = 20_000) -> Duel:

@@ -2,5 +2,4 @@
 # one per line, "name source" (see install-client.sh). Each is served at /name/,
 # and the server serves crustacean at / too (or the one named with --default-client).
 crustacean https://github.com/CharlieKulak/crustacean/releases/latest/download/crustacean-web.zip
-# PySnake (at /py/ on snake.charliekulak.com) is no longer maintained, so it's
-# installed by hand from its last build and not updated.
+# (PySnake is retired: it's no longer served; old /py/ links go to the main game.)

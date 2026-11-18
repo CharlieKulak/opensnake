@@ -15,7 +15,7 @@ play on it, a bit like Matrix, where one kind of server has many clients.
 | Client | What it is |
 | --- | --- |
 | [**Crustacean**](https://github.com/CharlieKulak/crustacean) | Rust, for desktop and the browser, with a 3D view. The default client on https://snake.charliekulak.com |
-| [**PySnake**](https://github.com/CharlieKulak/pysnake) | Python and pygame: the original OpenSnake game. **Outdated and no longer maintained**, replaced by Crustacean. Still at https://snake.charliekulak.com/py/ |
+| [**PySnake**](https://github.com/CharlieKulak/pysnake) | Python and pygame: the original OpenSnake game. **Retired**: replaced by Crustacean, and no longer on https://snake.charliekulak.com (it couldn't keep up with the anti-cheat checks). |
 
 Players on different clients share the same accounts, leaderboards and matches.
 To write your own client, start with [docs/protocol.md](docs/protocol.md).

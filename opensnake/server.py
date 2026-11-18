@@ -84,7 +84,7 @@ from . import cosmetics as cos
 from . import story
 from .bots import BOT_NAMES, LEVEL_NAMES, LEVELS
 from .bots import choose as bot_choose
-from .duel import BOSS, BOT_SLOPPY, YOU, Battle, Duel
+from .duel import BOSS, BOT_SLOPPY, YOU, Battle, Duel, replay_duel
 from .game import DIRS, MAX_LATE_MOVES, Game, game_to_state
 from .modes import BUILTIN_MODE_IDS, VERSUS_MODES, VERSUS_SIZES, speed_ms
 from .speedrun import replay_round
@@ -119,6 +119,15 @@ ROUND_GAP = 2.0  # seconds between paid single-player rounds (one account can't 
 # the same one earns nothing from rounds or matches until the first has been quiet this long.
 # (Two browsers, two accounts, one computer: only one of them gets paid.)
 IP_EARN_WINDOW = 10 * 60
+# "Are you still here?": after this long playing without a break, the game asks. No answer
+# within CHECK_SECONDS of it showing (or still playing without it ever being seen) and the
+# last PENALTY_HOURS of earnings are taken back, and the player is kicked.
+PLAY_LIMIT = 2.5 * 3600
+PLAY_BREAK = 15 * 60       # a break this long starts a new session
+CHECK_SECONDS = 20
+CHECK_GRACE = 6            # (for the answer's trip to the server)
+CHECK_UNSEEN = 120         # a check the game never showed, while the account keeps playing
+PENALTY_HOURS = 6
 ROUND_DAILY_CAP = 150_000  # most snake points single-player rounds pay an account (or a network) in a day
 MAX_PICTURE_BYTES = 256 * 1024
 MAX_PICTURE_SIDE = 512
@@ -1574,7 +1583,7 @@ class Room:
             if p.user_id is not None:
                 db = self.server.db
                 points = cos.MATCH_PLAYED + cos.MATCH_PER_FRUIT * side.game.score + (cos.MATCH_WIN if won else 0)
-                blocked = self.server.earn_blocked(p.ip, p.user_id)
+                blocked = await self.server.note_play(p.user_id) or self.server.earn_blocked(p.ip, p.user_id)
                 if blocked:
                     points, out["blocked"] = 0, blocked
                 else:
@@ -1614,7 +1623,7 @@ class Room:
             result = "draw" if g.winner is None else ("win" if g.winner == p.team else "loss")
             points = cos.MATCH_PLAYED + cos.MATCH_PER_FRUIT * g.snakes[p.snake].score + \
                 (cos.MATCH_WIN if result == "win" else 0)
-            blocked = self.server.earn_blocked(p.ip, p.user_id)
+            blocked = await self.server.note_play(p.user_id) or self.server.earn_blocked(p.ip, p.user_id)
             points = 0 if blocked else points
             if not blocked:
                 self.server.earned_on(p.ip, p.user_id)
@@ -1744,6 +1753,8 @@ class Server:
         self.last_round: dict[int, float] = {}       # account id -> when its last round was paid
         self.round_clock: dict[int, float] = {}      # account id -> when its last paid round ended (real time)
         self.ip_earner: dict[str, tuple[int, float]] = {}  # IP -> (the account earning there, last paid)
+        self.sessions: dict[int, dict] = {}         # account id -> {start, last, check}: how long it's been playing
+        self.duel_starts: dict[str, tuple] = {}     # token -> (account id, boss, seed, started): duels played offline
         self.seen_rounds: dict[int, list[str]] = {}  # account id -> fingerprints of its recent paid rounds
         self.ip_round_points: dict[tuple[str, str], int] = {}  # (IP, day) -> round points paid there today
         self.last_message: dict[int, float] = {}     # account id -> when it last sent a message
@@ -1830,6 +1841,10 @@ class Server:
         r.add_post("/api/trades/answer", self.answer_trade)
         r.add_get("/api/users/{name}/items", self.user_items)
         r.add_get("/api/replay/{category}", self.replay_run)
+        r.add_get("/api/presence", self.presence)
+        r.add_post("/api/presence", self.presence_answer)
+        r.add_post("/api/story/duel/start", self.duel_start)
+        r.add_post("/api/story/duel/finish", self.duel_finish)
         r.add_get("/api/story", self.story)
         r.add_post("/api/story/run", self.story_run)
         r.add_get("/api/jackpot", self.jackpot)
@@ -1839,18 +1854,17 @@ class Server:
         r.add_get("/api/messages/{name}", self.conversation)
         r.add_post("/api/messages", self.send_message)
         r.add_get("/ws", self.websocket)
-        # With the Rust version built, it's the main game at / and the Python (pygame)
-        # game moves to /py/; without it, the Python game stays at /. (Folders go
-        # before "/", which would catch them too.)
         r.add_get("/api/clients", self.list_clients)
         # Every client at /<name>/ (folders go before "/", which would catch them too)...
         for name, folder in self.clients.items():
             r.add_get(f"/{name}", self.to_client_folder)
             r.add_get(f"/{name}/", self.client_index)
             r.add_static(f"/{name}/", folder)
-        if "rs" not in self.clients:  # (where the Rust game used to be)
-            r.add_get("/rs", self.to_root)
-            r.add_get("/rs/", self.to_root)
+        # (where the Rust game used to be, and PySnake, which is retired: to the main game)
+        for old in ("rs", "py"):
+            if old not in self.clients:
+                r.add_get(f"/{old}", self.to_root)
+                r.add_get(f"/{old}/", self.to_root)
         # ...and the default one at /.
         if self.default_client:
             r.add_get("/", self.client_index)
@@ -1874,6 +1888,10 @@ class Server:
         async def draw_jackpots():
             while True:
                 await asyncio.sleep(1)
+                try:
+                    await self.sweep_presence()
+                except Exception as e:
+                    print(f"opensnake: presence check failed: {e}", flush=True)
                 try:
                     result = self.db.jackpot_tick()
                 except Exception as e:  # (never let one bad draw stop the loop)
@@ -2164,6 +2182,9 @@ class Server:
             return web.json_response({"valid": False, "message": f"The server couldn't check that run: {e}"})
         if not result.finished:
             return web.json_response({"valid": False, "message": "The replay doesn't finish the level."})
+        blocked = await self.note_play(user["id"])
+        if blocked:
+            return web.json_response({"valid": False, "message": blocked})
         out = self.db.story_level_done(user["id"], level, story.stars_for(level, result), result.elapsed)
         stars = self.db.story_stars(user["id"])
         order = story.stage_ids()
@@ -2231,7 +2252,7 @@ class Server:
             # (older games only said how much fruit they ate, which anyone could make up)
             return web.json_response({**nothing, "message": "Update your game to earn snake points from rounds."})
         ip = self.client_ip(request)
-        blocked = self.earn_blocked(ip, uid)
+        blocked = await self.note_play(uid) or self.earn_blocked(ip, uid)
         if blocked:
             return web.json_response({**nothing, "message": blocked})
         try:
@@ -2270,6 +2291,153 @@ class Server:
         self.db.progress(user_id, "rounds")
         self.db.progress(user_id, "fruit", min(fruit, MAX_ROUND_FRUIT))
         return web.json_response({"earned": earned, "fruit": fruit, "points": self.db.add_points(user_id, earned, "round")})
+
+    # -- "are you still here?"
+
+    async def note_play(self, uid: int) -> str | None:
+        """Count some playing towards this account's session. Returns why it can't earn right
+        now (a check is waiting for an answer), or None."""
+        now = asyncio.get_running_loop().time()
+        s = self.sessions.setdefault(uid, {"start": now, "last": now, "check": None})
+        if now - s["last"] > PLAY_BREAK:
+            s.update(start=now, check=None)  # (back from a break: clearly a person)
+        s["last"] = now
+        check = s["check"]
+        if check and check["shown"] is None and now - check["created"] > CHECK_UNSEEN:
+            await self.penalize(uid, "kept playing without answering \"Are you still here?\"")
+            return "Your last 6 hours of earnings were taken back: the game asked if you were still there."
+        if not check and now - s["start"] >= PLAY_LIMIT:
+            code = secrets.randbelow(900) + 100
+            choices = {code}
+            while len(choices) < 4:
+                choices.add(secrets.randbelow(900) + 100)
+            s["check"] = {"code": code, "choices": secrets.SystemRandom().sample(sorted(choices), 4), "created": now,
+                          "shown": None}
+            await self.notify(uid, {"t": "presence"})
+            check = s["check"]
+        if check:
+            return "Answer \"Are you still here?\" to keep earning."
+        return None
+
+    async def presence(self, request: web.Request) -> web.Response:
+        """Is there an "Are you still here?" for this player to answer? (Games ask while playing.)"""
+        user = self.account(request, "Log in.")
+        s = self.sessions.get(user["id"])
+        check = s and s["check"]
+        if not check:
+            return web.json_response({"check": None})
+        now = asyncio.get_running_loop().time()
+        if check["shown"] is None:
+            check["shown"] = now
+        left = max(0, CHECK_SECONDS - (now - check["shown"]))
+        return web.json_response({"check": {"code": check["code"], "choices": check["choices"], "seconds": round(left, 1)}})
+
+    async def presence_answer(self, request: web.Request) -> web.Response:
+        user = self.account(request, "Log in.")
+        s = self.sessions.get(user["id"])
+        check = s and s["check"]
+        if not check:
+            return web.json_response({"ok": True})
+        try:
+            answer = int((await self.body(request)).get("answer"))
+        except (TypeError, ValueError):
+            answer = None
+        if answer != check["code"]:
+            return web.json_response({"ok": False, "message": "That's not the one. Try again!"})
+        now = asyncio.get_running_loop().time()
+        s.update(start=now, last=now, check=None)  # (a person: the clock starts again)
+        return web.json_response({"ok": True})
+
+    async def sweep_presence(self) -> None:
+        """Checks the game showed and nobody answered in time: take the earnings back."""
+        now = asyncio.get_running_loop().time()
+        for uid, s in list(self.sessions.items()):
+            check = s["check"]
+            if check and check["shown"] is not None and now - check["shown"] > CHECK_SECONDS + CHECK_GRACE:
+                await self.penalize(uid, "didn't answer \"Are you still here?\"")
+
+    async def penalize(self, uid: int, why: str) -> None:
+        """Take back the last 6 hours of earnings (not trades or sales between players), and kick."""
+        db = self.db
+        since = (datetime.now(timezone.utc) - timedelta(hours=PENALTY_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        earned = db.db.execute("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE user_id = ? AND amount > 0 AND created >= ? "
+                               "AND reason NOT LIKE 'trade:%' AND reason NOT LIKE 'market:%' AND reason NOT LIKE 'jackpot%' "
+                               "AND reason NOT LIKE 'test%'", (uid, since)).fetchone()[0]
+        xp = db.db.execute("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE user_id = ? AND amount > 0 AND created >= ? "
+                           "AND (reason = 'round' OR reason LIKE 'versus %' OR reason LIKE 'story:%')", (uid, since)).fetchone()[0]
+        if earned:
+            db.add_points(uid, -earned, f"anti-macro: the last {PENALTY_HOURS} hours of earnings taken back")
+        if xp:
+            db.pass_row(uid)
+            db.db.execute("UPDATE battlepass SET xp = MAX(0, xp - ?) WHERE user_id = ? AND week = ?",
+                          (xp, uid, db.current_week()))
+            db.db.commit()
+        now = asyncio.get_running_loop().time()
+        self.sessions[uid] = {"start": now, "last": now, "check": None}
+        print(f"opensnake: anti-macro: user {uid} {why}; took back {earned} points", flush=True)
+        message = (f"You didn't answer \"Are you still here?\", so the last {PENALTY_HOURS} hours of snake points "
+                   f"({earned:,}) were taken back.")
+        for p in list(self.connected.get(uid, ())):
+            await self.leave(p)
+            try:
+                await p.ws.send_str(json.dumps({"t": "kicked", "message": message, "taken": earned}))
+                await p.ws.close()
+            except (ConnectionError, RuntimeError):
+                pass
+
+    # -- boss duels played on the player's own computer
+
+    async def duel_start(self, request: web.Request) -> web.Response:
+        """Start a boss duel the game plays itself: the seed it must use (one go each)."""
+        user = self.account(request, "Log in to fight the bosses.")
+        try:
+            num = int((await self.body(request)).get("boss"))
+        except (TypeError, ValueError):
+            num = 0
+        boss = story.BOSS_BY_NUM.get(num)
+        if not boss:
+            return self.error("No such boss.")
+        if not story.unlocked(f"boss-{num}", self.db.story_stars(user["id"])):
+            return self.error("Finish this chapter's ten levels first.")
+        now = asyncio.get_running_loop().time()
+        self.duel_starts = {k: v for k, v in self.duel_starts.items() if now - v[3] < 3600}
+        token = secrets.token_hex(12)
+        seed = secrets.randbelow(2 ** 31)
+        self.duel_starts[token] = (user["id"], num, seed, now)
+        return web.json_response({"token": token, "seed": seed, "boss": num})
+
+    async def duel_finish(self, request: web.Request) -> web.Response:
+        """A duel the game played: replay it, and pay a win."""
+        user = self.account(request, "Log in to fight the bosses.")
+        uid = user["id"]
+        body = await self.body(request)
+        start = self.duel_starts.pop(str(body.get("token", "")), None)
+        if not start or start[0] != uid:
+            return self.error("That duel wasn't started here (or was already finished).")
+        _uid, num, seed, started = start
+        boss = story.BOSS_BY_NUM[num]
+        now = asyncio.get_running_loop().time()
+        try:
+            d, least_ms = await asyncio.get_running_loop().run_in_executor(
+                None, replay_duel, boss, seed, body.get("inputs") or [], 40_000)
+        except (TypeError, ValueError) as e:
+            return self.error(f"The server couldn't check that duel ({e}).")
+        you, them = d.sides[YOU], d.sides[BOSS]
+        out = {"boss": num, "won": d.over and d.winner == YOU, "seconds": round(d.tick / d.per_second, 1),
+               "best_chain": you.best_chain, "sent": you.sent, "boss_sent": them.sent, "ticks": d.tick}
+        if not d.over:
+            return web.json_response({**out, "won": False, "message": "The replay of that duel doesn't end."})
+        if out["won"]:
+            # (it takes real time to play: a duel finished faster than that wasn't played)
+            if now - started < least_ms / 1000 * 0.85 + 2.0:
+                return web.json_response({**out, "won": False, "message": "That duel finished faster than it could be played."})
+            blocked = await self.note_play(uid)
+            if blocked:
+                return web.json_response({**out, "message": blocked, "won": True, "paid": False})
+            out.update(self.db.story_boss_won(uid, boss))
+        else:
+            await self.note_play(uid)
+        return web.json_response(out)
 
     # -- one account earning per network
 
@@ -2524,7 +2692,7 @@ class Server:
                 return code
 
     async def websocket(self, request: web.Request) -> web.WebSocketResponse:
-        ws = web.WebSocketResponse(heartbeat=20)
+        ws = web.WebSocketResponse(heartbeat=20, compress=False)  # (no compression: every move goes out at once)
         await ws.prepare(request)
         # (newer games log in with an "auth" message instead of ?token=, which ends up in web server logs)
         user = self.db.user_for(request.query.get("token"))

@@ -107,7 +107,30 @@ def golden() -> dict:
                          "id": c.id, "seed": seed, "inputs": run.inputs, "elapsed": run.elapsed,
                          "time_ms": round(run.elapsed), "finished": run.finished, "splits": run.splits,
                          "state": state})
-    return {"rng": rng_cases, "runs": runs}
+    # boss duels: a game plays them itself, and the server replays them to check a win
+    from opensnake import bots, duel
+    duels = []
+    for num, seed in ((1, 11), (2, 5), (4, 7), (5, 3), (6, 9), (7, 2), (8, 4), (8, 21)):
+        boss = story.BOSS_BY_NUM[num]
+        d = duel.Duel(boss, seed)
+        d.start()
+        rng, inputs = random.Random(seed), []
+        while not d.over and d.tick < 6000:
+            g = d.you
+            if not g.over:
+                m = bots.choose(g, 0, rng, "hard")
+                if m:
+                    inputs.append([d.tick, m])
+                    g.input_for(0, m)
+            d.step()
+            d.clear_events()
+        duels.append({"boss": num, "seed": seed, "inputs": inputs, "tick": d.tick, "winner": d.winner, "over": d.over,
+                      "sides": [{"body": [[q.x, q.y] for q in s.game.snakes[0].body], "walls": sorted(s.game.walls),
+                                 "apples": [[a.x, a.y, int(a.poison)] for a in s.game.apples],
+                                 "arrows": sorted([x, y, dd] for (x, y), dd in s.game.arrows.items()),
+                                 "sent": s.sent, "best_chain": s.best_chain, "score": s.game.score}
+                                for s in d.sides]})
+    return {"rng": rng_cases, "runs": runs, "duels": duels}
 
 
 def main() -> None:
