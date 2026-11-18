@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .game import Event, Game
+from .game import DIRS, Event, Game
 
 RUN_FORMAT = 1
 CUSTOM_PREFIX = "custom-"
@@ -351,6 +351,51 @@ def replay(data: dict, max_ticks: int = 2_000_000) -> Run:
         run.step()
         run.game.events.clear()
     return run
+
+
+TURN_CELL_MS = 85.0  # the fastest a game ever plays a move (gliding through a cell to a waiting turn)
+MAX_ROUND_TICKS = 200_000
+
+
+def replay_round(data: dict) -> tuple[int, float, float]:
+    """Replay a single-player round from its settings, seed and inputs: (fruit eaten, in-game
+    ms, the least real time it could have taken to play). Raises ValueError if it's not a
+    round that could be played."""
+    from .modes import BUILTIN_MODE_IDS
+    st = data.get("settings")
+    if not isinstance(st, dict):
+        raise ValueError("no settings")
+    try:
+        w, h = int(st["w"]), int(st["h"])
+        fruit_count = int(st.get("fruit_count", 1))
+        tick_ms, accel = float(st["tick_ms"]), float(st.get("accel", 0) or 0)
+        modes = [str(m) for m in st.get("modes", [])]
+        fruit = str(st.get("fruit", "apple"))
+        seed = int(data["seed"])
+        inputs = [(int(t), str(d)) for t, d in data["inputs"]]
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"malformed round: {e}") from None
+    if not (5 <= w <= 1000 and 5 <= h <= 1000 and 1 <= fruit_count <= w * h and MIN_TICK_MS <= tick_ms <= 2000
+            and 0 <= accel <= 50 and len(fruit) <= 20 and len(inputs) <= 200_000):
+        raise ValueError("those settings aren't a round the game plays")
+    if any(m not in BUILTIN_MODE_IDS for m in modes) or any(d not in DIRS for _t, d in inputs):
+        raise ValueError("unknown modes or moves")
+    run = Run(make_custom(w, h, modes, None, fruit_count, tick_ms, fruit, accel=accel), seed)
+    g = run.game
+    i = 0
+    least = 0.0
+    while not g.over and g.tick < MAX_ROUND_TICKS:
+        while i < len(inputs) and inputs[i][0] <= g.tick:
+            run.input(inputs[i][1])
+            i += 1
+        if not g.started:
+            break
+        ms, tick = run.tick_ms, g.tick
+        run.step()
+        if g.tick != tick:
+            least += min(ms, TURN_CELL_MS)
+        g.events.clear()
+    return g.score, run.elapsed, least
 
 
 def verify(data: dict) -> tuple[bool, str]:

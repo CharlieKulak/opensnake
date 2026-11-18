@@ -14,6 +14,24 @@ from opensnake import cosmetics as cos  # noqa: E402
 from opensnake.speedrun import CATEGORY_BY_ID, make_custom  # noqa: E402
 
 
+def played_round(seed=1, max_fruit=10):
+    """A real single-player round (a bot eats up to max_fruit, then crashes): (round, fruit)."""
+    from opensnake import bots
+    from opensnake.speedrun import Run, make_custom
+    st = {"w": 12, "h": 10, "modes": [], "fruit_count": 2, "fruit": "apple", "tick_ms": 130.0, "accel": 0}
+    run = Run(make_custom(12, 10, [], None, 2, 130.0), seed)
+    g, rng = run.game, random.Random(seed)
+    run.input("up")
+    while not g.over and g.tick < 3000:
+        if g.score < max_fruit:
+            d = bots.choose(g, 0, rng, "hard")
+            if d and d != (g.snakes[0].planned or g.snakes[0].dir):
+                run.input(d)
+        run.step()
+        g.events.clear()
+    return {"seed": seed, "inputs": run.inputs, "settings": st}, g.score
+
+
 class CatalogueTests(ServerTestCase):
     def test_skins_with_the_rarest_only_in_loot_boxes(self):
         self.assertEqual(len(cos.SKINS), 147)
@@ -58,11 +76,67 @@ class CatalogueTests(ServerTestCase):
 class PointsTests(ServerTestCase):
     async def test_rounds_pay_points_but_not_too_fast(self):
         token = await self.account()
-        status, res = await self.post("/api/rounds", {"fruit": 7}, token)
-        self.assertEqual((status, res["earned"]), (200, cos.round_points(7)))
-        self.assertEqual((await self.post("/api/rounds", {"fruit": 7}, token))[1]["earned"], 0)  # too soon
-        self.assertEqual((await self.get("/api/me", token))[1]["points"], cos.round_points(7))
-        self.assertEqual((await self.post("/api/rounds", {"fruit": 1}))[0], 401)
+        rnd, fruit = played_round(1, 7)
+        status, res = await self.post("/api/rounds", {"round": rnd}, token)
+        self.assertEqual((status, res["earned"], res["fruit"]), (200, cos.round_points(fruit), fruit))
+        self.assertEqual((await self.post("/api/rounds", {"round": rnd}, token))[1]["earned"], 0)  # too soon
+        self.assertEqual((await self.get("/api/me", token))[1]["points"], cos.round_points(fruit))
+        self.assertEqual((await self.post("/api/rounds", {"round": rnd}))[0], 401)
+
+    async def test_rounds_are_checked_not_taken_on_trust(self):
+        token = await self.account()
+        res = (await self.post("/api/rounds", {"fruit": 197}, token))[1]  # (the old way: just say so)
+        self.assertEqual(res["earned"], 0)
+        self.assertIn("Update your game", res["message"])
+        rnd, fruit = played_round(2, 12)
+        res = (await self.post("/api/rounds", {"round": rnd, "fruit": 197}, token))[1]
+        self.assertEqual(res["fruit"], fruit)  # (what the replay ate, whatever the game claims)
+        bad = {**rnd, "settings": {**rnd["settings"], "modes": ["my-mod"]}}
+        self.server.last_round.clear()
+        self.assertEqual((await self.post("/api/rounds", {"round": bad}, token))[1]["earned"], 0)
+        # a second round sent before the first could have been played (a macro) pays nothing
+        self.server.last_round.clear()
+        res = (await self.post("/api/rounds", {"round": rnd}, token))[1]
+        self.assertEqual(res["earned"], 0)
+        self.assertIn("faster than it could be played", res["message"])
+
+    async def test_the_same_round_twice_and_the_daily_cap(self):
+        token = await self.account()
+        rnd, fruit = played_round(7, 6)
+        self.assertGreater((await self.post("/api/rounds", {"round": rnd}, token))[1]["earned"], 0)
+        self.server.last_round.clear()
+        self.server.round_clock.clear()
+        res = (await self.post("/api/rounds", {"round": rnd}, token))[1]
+        self.assertEqual(res["earned"], 0)
+        self.assertIn("already been paid", res["message"])
+        db = self.server.db
+        db.add_points(1, 150_000 - 50 - cos.round_points(fruit), "round")  # (nearly a day's worth)
+        self.server.last_round.clear()
+        self.server.round_clock.clear()
+        self.assertEqual((await self.post("/api/rounds", {"round": played_round(8, 6)[0]}, token))[1]["earned"], 50)
+        self.server.last_round.clear()
+        self.server.round_clock.clear()
+        res = (await self.post("/api/rounds", {"round": played_round(9, 6)[0]}, token))[1]
+        self.assertEqual(res["earned"], 0)
+        self.assertIn("most rounds pay in a day", res["message"])
+
+    async def test_one_account_earns_per_network(self):
+        a, b = await self.account("alice"), await self.account("bobby")
+        rnd, fruit = played_round(3, 5)
+        self.assertGreater((await self.post("/api/rounds", {"round": rnd}, a))[1]["earned"], 0)
+        res = (await self.post("/api/rounds", {"round": rnd}, b))[1]  # (another browser, same computer)
+        self.assertEqual(res["earned"], 0)
+        self.assertIn("Another account on your network", res["message"])
+        # (behind the site's proxy, the player's own address is what counts)
+        headers = {"Authorization": f"Bearer {b}", "X-Forwarded-For": "203.0.113.9"}
+        resp = await self.client.post("/api/rounds", json={"round": rnd}, headers=headers)
+        self.assertGreater((await resp.json())["earned"], 0)
+        # quiet for long enough: the network is free again
+        ip, (uid, t) = next(iter(self.server.ip_earner.items()))
+        self.server.ip_earner = {k: (u, t - 11 * 60) for k, (u, t) in self.server.ip_earner.items()}
+        self.server.last_round.clear()
+        self.server.round_clock.clear()
+        self.assertGreater((await self.post("/api/rounds", {"round": played_round(4, 3)[0]}, b))[1]["earned"], 0)
 
     async def test_speedrun_pr_and_wr_rewards(self):
         a, b = await self.account("alice"), await self.account("bob")
@@ -203,7 +277,9 @@ class BotAndInviteTests(ServerTestCase):
 
     async def test_matches_between_people_are_ranked(self):
         a, b = await self.account("alice"), await self.account("bobby")
-        wa, wb = await self.connect(a), await self.connect(b)
+        # (two different places: two accounts on one network don't play ranked against each other)
+        wa = await self.client.ws_connect(f"/ws?token={a}", headers={"X-Forwarded-For": "198.51.100.1"})
+        wb = await self.client.ws_connect(f"/ws?token={b}", headers={"X-Forwarded-For": "198.51.100.2"})
         await wa.send_json({"t": "host", "settings": {"size": "small", "speed": 1.0}})
         code = (await self.recv(wa, "room"))["code"]
         await wb.send_json({"t": "join", "code": code})
@@ -213,6 +289,21 @@ class BotAndInviteTests(ServerTestCase):
         self.assertTrue(ra["ranked"] and rb["ranked"])
         changes = sorted([ra["rp_change"], rb["rp_change"]])
         self.assertIn(changes, ([cos.RP_LOSS, cos.RP_WIN], [cos.RP_DRAW, cos.RP_DRAW]))
+        for ws in (wa, wb):
+            await ws.close()
+
+    async def test_two_accounts_on_one_network_cant_farm_each_other(self):
+        a, b = await self.account("alice"), await self.account("bobby")
+        wa, wb = await self.connect(a), await self.connect(b)  # (same computer)
+        await wa.send_json({"t": "host", "settings": {"size": "small", "speed": 1.0}})
+        code = (await self.recv(wa, "room"))["code"]
+        await wb.send_json({"t": "join", "code": code})
+        await self.recv(wb, "room")
+        await wa.send_json({"t": "start"})
+        ra, rb = await self.recv(wa, "reward", timeout=30), await self.recv(wb, "reward", timeout=30)
+        self.assertFalse(ra["ranked"] or rb["ranked"])  # no rank points
+        self.assertEqual(sorted(r["points"] > 0 for r in (ra, rb)), [False, True])  # only one gets paid
+        self.assertIn("Another account", (ra if ra["points"] == 0 else rb)["blocked"])
         for ws in (wa, wb):
             await ws.close()
 
@@ -513,8 +604,9 @@ class BattlePassTests(ServerTestCase):
     async def test_xp_from_playing_and_levels_past_100_carry_over(self):
         token = await self.account()
         db = self.server.db
-        await self.post("/api/rounds", {"fruit": 10}, token)
-        self.assertEqual((await self.get("/api/battlepass", token))[1]["xp"], cos.round_points(10))
+        rnd, fruit = played_round(5, 10)
+        await self.post("/api/rounds", {"round": rnd}, token)
+        self.assertEqual((await self.get("/api/battlepass", token))[1]["xp"], cos.round_points(fruit))
         db.pass_row(1, "2025-W10")  # (past weeks, so they can't clash with the real current week)
         db.db.execute("UPDATE battlepass SET xp = ? WHERE week = '2025-W10'", (120 * cos.LEVEL_XP + 50,))
         db.db.commit()
@@ -718,11 +810,12 @@ class DailyTests(ServerTestCase):
 
     async def test_rounds_count(self):
         token = await self.account()
-        await self.post("/api/rounds", {"fruit": 12}, token)
+        rnd, fruit = played_round(6, 12)
+        await self.post("/api/rounds", {"round": rnd}, token)
         info = self.server.db.daily_info(1)
         for c in info["challenges"]:
             if c["kind"] == "fruit":
-                self.assertEqual(c["progress"], 12)
+                self.assertEqual(c["progress"], fruit)
             if c["kind"] == "rounds":
                 self.assertEqual(c["progress"], 1)
 

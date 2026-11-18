@@ -87,6 +87,7 @@ from .bots import choose as bot_choose
 from .duel import BOSS, BOT_SLOPPY, YOU, Battle, Duel
 from .game import DIRS, MAX_LATE_MOVES, Game, game_to_state
 from .modes import BUILTIN_MODE_IDS, VERSUS_MODES, VERSUS_SIZES, speed_ms
+from .speedrun import replay_round
 from .speedrun import (CATEGORY_BY_ID, CUSTOM_PREFIX, WEEKLY_PREFIX, category_def, category_from_def,
                        find_category, verify, weekly_categories)
 from .weeks import previous_week, time_left, week_end, week_id, week_start
@@ -114,6 +115,11 @@ MAX_MESSAGE = 500
 MESSAGE_GAP = 0.3   # seconds between messages from one account (no flooding)
 MAX_ROUND_FRUIT = 300  # most fruit one round counts towards daily challenges
 ROUND_GAP = 2.0  # seconds between paid single-player rounds (one account can't farm faster)
+# One account at a time earns from playing on each network (IP address): another account on
+# the same one earns nothing from rounds or matches until the first has been quiet this long.
+# (Two browsers, two accounts, one computer: only one of them gets paid.)
+IP_EARN_WINDOW = 10 * 60
+ROUND_DAILY_CAP = 150_000  # most snake points single-player rounds pay an account (or a network) in a day
 MAX_PICTURE_BYTES = 256 * 1024
 MAX_PICTURE_SIDE = 512
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -1314,6 +1320,7 @@ class Player:
         self.snake = -1  # index in the running game
         self.rank = "Bot" if bot else ""
         self.avatar = ""
+        self.ip: str | None = None  # where they're connecting from (for the one-earner-per-network rule)
 
     @property
     def human(self) -> bool:
@@ -1567,6 +1574,11 @@ class Room:
             if p.user_id is not None:
                 db = self.server.db
                 points = cos.MATCH_PLAYED + cos.MATCH_PER_FRUIT * side.game.score + (cos.MATCH_WIN if won else 0)
+                blocked = self.server.earn_blocked(p.ip, p.user_id)
+                if blocked:
+                    points, out["blocked"] = 0, blocked
+                else:
+                    self.server.earned_on(p.ip, p.user_id)
                 info = db.record_match(p.user_id, "win" if won else "loss", False, points)
                 db.add_xp(p.user_id, points)
                 db.progress(p.user_id, "matches")
@@ -1593,15 +1605,23 @@ class Room:
 
     async def reward(self, g: Game) -> None:
         """Snake points for everyone with an account, and rank points in ranked matches against other people."""
-        ranked = self.ranked and len(self.humans) >= 2
+        # (two accounts on one network playing each other would just be one person farming rank)
+        ips = [q.ip for q in self.humans]
+        ranked = self.ranked and len(self.humans) >= 2 and (None in ips or len(set(ips)) == len(ips))
         for p in self.players:
             if p.user_id is None or not (0 <= p.snake < len(g.snakes)):
                 continue
             result = "draw" if g.winner is None else ("win" if g.winner == p.team else "loss")
             points = cos.MATCH_PLAYED + cos.MATCH_PER_FRUIT * g.snakes[p.snake].score + \
                 (cos.MATCH_WIN if result == "win" else 0)
+            blocked = self.server.earn_blocked(p.ip, p.user_id)
+            points = 0 if blocked else points
+            if not blocked:
+                self.server.earned_on(p.ip, p.user_id)
             db = self.server.db
             info = db.record_match(p.user_id, result, ranked, points)
+            if blocked:
+                info["blocked"] = blocked
             db.add_xp(p.user_id, points)
             db.progress(p.user_id, "matches")
             # (wins count against people, or bots that aren't on easy)
@@ -1722,6 +1742,10 @@ class Server:
         self.next_pid = 1
         self.connected: dict[int, set[Player]] = {}  # account id -> its open connections (who's online)
         self.last_round: dict[int, float] = {}       # account id -> when its last round was paid
+        self.round_clock: dict[int, float] = {}      # account id -> when its last paid round ended (real time)
+        self.ip_earner: dict[str, tuple[int, float]] = {}  # IP -> (the account earning there, last paid)
+        self.seen_rounds: dict[int, list[str]] = {}  # account id -> fingerprints of its recent paid rounds
+        self.ip_round_points: dict[tuple[str, str], int] = {}  # (IP, day) -> round points paid there today
         self.last_message: dict[int, float] = {}     # account id -> when it last sent a message
         self.settle_task: asyncio.Task | None = None
         self.jackpot_task: asyncio.Task | None = None
@@ -2200,19 +2224,81 @@ class Server:
     async def finish_round(self, request: web.Request) -> web.Response:
         """Snake points for a finished single-player round (sent by the game when you die or win)."""
         user = self.account(request, "Log in to earn snake points.")
+        uid = user["id"]
+        body = await self.body(request)
+        nothing = {"earned": 0, "points": self.db.points(uid)}
+        if not isinstance(body.get("round"), dict):
+            # (older games only said how much fruit they ate, which anyone could make up)
+            return web.json_response({**nothing, "message": "Update your game to earn snake points from rounds."})
+        ip = self.client_ip(request)
+        blocked = self.earn_blocked(ip, uid)
+        if blocked:
+            return web.json_response({**nothing, "message": blocked})
         try:
-            fruit = max(0, int((await self.body(request)).get("fruit", 0)))
-        except (TypeError, ValueError):
-            return self.error("Expected a fruit count.")
+            fruit, played_ms, least_ms = await asyncio.get_running_loop().run_in_executor(None, replay_round, body["round"])
+        except (KeyError, TypeError, ValueError, IndexError) as e:
+            return web.json_response({**nothing, "message": f"The server couldn't check that round ({e})."})
         now = asyncio.get_running_loop().time()
-        if now - self.last_round.get(user["id"], -1e9) < ROUND_GAP:
-            return web.json_response({"earned": 0, "points": self.db.points(user["id"])})
-        self.last_round[user["id"]] = now
-        earned = cos.round_points(fruit)
-        self.db.add_xp(user["id"], earned)
-        self.db.progress(user["id"], "rounds")
-        self.db.progress(user["id"], "fruit", min(fruit, MAX_ROUND_FRUIT))
-        return web.json_response({"earned": earned, "points": self.db.add_points(user["id"], earned, "round")})
+        if now - self.last_round.get(uid, -1e9) < ROUND_GAP:
+            return web.json_response(nothing)
+        # A round takes real time to play: it can't have started before the last paid one ended.
+        if now - least_ms / 1000 * 0.9 < self.round_clock.get(uid, -1e9):
+            return web.json_response({**nothing, "message": "That round came in faster than it could be played."})
+        if fruit <= 0:
+            # (a round that ate nothing pays nothing: otherwise empty rounds could be sent over and over)
+            return web.json_response({**nothing, "fruit": 0})
+        mark = hashlib.sha1(json.dumps(body["round"], sort_keys=True).encode()).hexdigest()
+        if mark in self.seen_rounds.get(uid, []):
+            return web.json_response({**nothing, "message": "That round has already been paid."})
+        day = self.db.today()
+        today = self.db.db.execute("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE user_id = ? AND reason = 'round' "
+                                   "AND created >= ?", (uid, day)).fetchone()[0]
+        room = ROUND_DAILY_CAP - max(today, self.ip_round_points.get((ip or "", day), 0))
+        if room <= 0:
+            return web.json_response({**nothing, "message": f"That's the most rounds pay in a day "
+                                                            f"({ROUND_DAILY_CAP:,} snake points). More tomorrow!"})
+        self.last_round[uid] = now
+        self.round_clock[uid] = now
+        self.seen_rounds[uid] = (self.seen_rounds.get(uid, []) + [mark])[-500:]
+        self.earned_on(ip, uid)
+        user_id = uid
+        earned = min(room, cos.round_points(fruit))
+        if ip:
+            self.ip_round_points = {k: v for k, v in self.ip_round_points.items() if k[1] == day}
+            self.ip_round_points[(ip, day)] = self.ip_round_points.get((ip, day), 0) + earned
+        self.db.add_xp(user_id, earned)
+        self.db.progress(user_id, "rounds")
+        self.db.progress(user_id, "fruit", min(fruit, MAX_ROUND_FRUIT))
+        return web.json_response({"earned": earned, "fruit": fruit, "points": self.db.add_points(user_id, earned, "round")})
+
+    # -- one account earning per network
+
+    @staticmethod
+    def client_ip(request: web.Request) -> str | None:
+        """The player's address. Behind the site's own reverse proxy (on this machine) that's
+        the address it adds to X-Forwarded-For; otherwise the connection's own."""
+        remote = request.remote or ""
+        if remote in ("127.0.0.1", "::1", "localhost"):
+            fwd = request.headers.get("X-Forwarded-For", "")
+            if fwd:
+                return fwd.split(",")[-1].strip() or remote
+        return remote or None
+
+    def earn_blocked(self, ip: str | None, user_id: int) -> str | None:
+        """Why this account can't earn from playing right now (another account on its network is), or None."""
+        if not ip:
+            return None
+        other = self.ip_earner.get(ip)
+        now = asyncio.get_running_loop().time()
+        if other and other[0] != user_id and now - other[1] < IP_EARN_WINDOW:
+            mins = max(1, round((IP_EARN_WINDOW - (now - other[1])) / 60))
+            return (f"Another account on your network is earning snake points right now. Only one account per "
+                    f"network can earn at a time (try again in about {mins} min).")
+        return None
+
+    def earned_on(self, ip: str | None, user_id: int) -> None:
+        if ip:
+            self.ip_earner[ip] = (user_id, asyncio.get_running_loop().time())
 
     # -- community categories
     async def categories(self, request: web.Request) -> web.Response:
@@ -2445,6 +2531,7 @@ class Server:
         guest = re.sub(r"[^A-Za-z0-9_ -]", "", request.query.get("name", ""))[:16].strip()
         name = user["name"] if user else (guest or f"Guest{random.randint(100, 999)}")
         player = Player(ws, self.new_pid(), name, None)
+        player.ip = self.client_ip(request)
         if user:
             self.sign_in(player, user)
         await ws.send_str(json.dumps({"t": "welcome", "id": player.id, "name": player.name, "account": bool(user)}))

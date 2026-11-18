@@ -52,7 +52,7 @@ come back with a 4xx status and `{"error": "a sentence to show the player"}`;
 
 | Request | Body | Reply |
 | --- | --- | --- |
-| `POST /api/rounds` | `{fruit}` | `{earned, points}`: points for a finished single-player round |
+| `POST /api/rounds` | `{round: {seed, settings, inputs}}` | `{earned, fruit, points}` (and `message` when it pays nothing): points for a finished single-player round. The server replays the round to count the fruit (`settings`: `w`, `h`, `modes`, `fruit_count`, `fruit`, `tick_ms`, `accel`; `inputs` as in a run file). Rounds that ate nothing, a round sent twice, or one sent sooner than it could have been played pay nothing; rounds pay at most 150,000 a day; and only one account per network (IP address) earns from playing at a time |
 | `POST /api/store/buy` | `{item}` | `{item, points}`: buy a shop item (`"skin:id"` or `"pack:id"`) |
 | `POST /api/store/open` | `{crate}` | `{item, new, copies, points}`: open a loot box |
 | `GET /api/market?q=&rarity=&sort=cheap\|pricey\|new` | | `{listings, mine, fee, min, max}` |
